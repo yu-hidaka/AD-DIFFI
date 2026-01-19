@@ -495,29 +495,17 @@ def compare_diffi_vs_ad_diffi(
 
     return compare_df.sort_values("AD_DIFFI_RSO_Z", ascending=False)
 
-
 # =============================================================================
 # Cell 6: Breast Cancer Dataset Processing
 # =============================================================================
 
 def create_binary_features_breast_cancer(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Convert Breast Cancer dataset to mixed continuous/binary features.
 
-    Implements specifications from Table S2.
-
-    Args:
-        df: Raw breast cancer DataFrame from Kaggle
-
-    Returns:
-        Processed DataFrame with continuous and binary features
-    """
     df_processed = df[[
         'Age', 'Tumor Size', 'Regional Node Examined',
         'Reginol Node Positive', 'Survival Months', 'Status'
     ]].copy()
 
-    # Binary encoding features
     df_processed['Race_White'] = (df['Race'] == 'White').astype(int)
     df_processed['Marital_Married'] = df['Marital Status'].isin(
         ['Married', 'Married-spouse-absent']
@@ -526,7 +514,6 @@ def create_binary_features_breast_cancer(df: pd.DataFrame) -> pd.DataFrame:
     df_processed['N_Stage_N0'] = (df['N Stage'] == 'N0').astype(int)
     df_processed['Stage_II'] = (df['6th Stage'] == 'II').astype(int)
 
-    # Differentiation mapping
     diff_map = {
         'Poorly differentiated': 0,
         'Moderately differentiated': 1,
@@ -542,6 +529,122 @@ def create_binary_features_breast_cancer(df: pd.DataFrame) -> pd.DataFrame:
     return df_processed
 
 
+def evaluate_cox_cindex(
+    df: pd.DataFrame,
+    feature_list: List[str],
+    time_col: str = 'Survival Months',
+    event_col: str = 'Status_num',
+    random_seed: int = 0,
+    max_features: int = 10
+) -> float:
+    """
+    Robust Cox C-index with multicollinearity handling.
+    """
+    from lifelines import CoxPHFitter
+    from lifelines.utils import concordance_index
+    import numpy as np
+    import pandas as pd
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.feature_selection import VarianceThreshold
+
+    np.random.seed(random_seed)
+
+    X_raw = df[feature_list].fillna(df[feature_list].median()).copy()
+    T = df[time_col].values
+    E = df[event_col].values
+
+    valid_mask = ~(pd.isna(T) | pd.isna(E))
+    if valid_mask.sum() < 20:
+        print(f"[WARNING] Insufficient data: {valid_mask.sum()} samples")
+        return 0.0
+
+    X = X_raw[valid_mask].reset_index(drop=True)
+    T_valid = T[valid_mask]
+    E_valid = E[valid_mask]
+
+    n_samples, n_features = X.shape
+    print(f"[DEBUG] Cox: {n_samples} samples, {n_features} features")
+
+    if n_features == 0:
+        return 0.0
+
+    selector = VarianceThreshold(threshold=0.01)
+    X_var = selector.fit_transform(X)
+    selected_features = [feature_list[i] for i in selector.get_support(indices=True)]
+
+    if len(selected_features) == 0:
+        print("[WARNING] No features after variance filtering")
+        return 0.0
+
+    X_filtered = pd.DataFrame(X_var, columns=selected_features)
+    print(f"[DEBUG] After variance filter: {len(selected_features)} features")
+
+    if len(selected_features) > max_features:
+        corr_matrix = X_filtered.corr().abs()
+        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        high_corr = [column for column in upper.columns if any(upper[column] > 0.95)]
+
+        remaining_features = [f for f in selected_features if f not in high_corr]
+        if len(remaining_features) > max_features:
+            remaining_features = remaining_features[:max_features]
+
+        X_filtered = X_filtered[remaining_features]
+        print(f"[DEBUG] After correlation filter: {len(remaining_features)} features")
+    else:
+        remaining_features = selected_features
+
+    scaler = StandardScaler()
+    X_scaled = pd.DataFrame(
+        scaler.fit_transform(X_filtered),
+        columns=remaining_features
+    )
+
+    survival_df = pd.DataFrame({
+        time_col: T_valid,
+        'event': E_valid.astype(bool)
+    })
+    cox_df = pd.concat([survival_df, X_scaled], axis=1)
+
+    try:
+        cph = CoxPHFitter()
+        cph.fit(
+            cox_df,
+            duration_col=time_col,
+            event_col='event',
+            show_progress=False,
+            robust=True
+        )
+
+        risk_scores = -cph.predict_partial_hazard(X_scaled)
+        cindex = concordance_index(T_valid, risk_scores, E_valid)
+
+        print(f"[SUCCESS] Cox C-index: {cindex:.4f} ({len(remaining_features)} features)")
+        return float(cindex)
+
+    except Exception as e:
+        print(f"[ERROR] Cox failed: {str(e)[:100]}")
+        print("  Using null model C-index...")
+
+        if len(remaining_features) > 0:
+            single_feature = remaining_features[0]
+            single_df = pd.concat([
+                survival_df,
+                X_scaled[[single_feature]]
+            ], axis=1)
+
+            try:
+                cph_single = CoxPHFitter()
+                cph_single.fit(single_df, duration_col=time_col, event_col='event', show_progress=False)
+                risk_single = -cph_single.predict_partial_hazard(X_scaled[[single_feature]])
+                cindex_single = concordance_index(T_valid, risk_single, E_valid)
+                print(f"[FALLBACK] Single feature C-index: {cindex_single:.4f}")
+                return float(cindex_single)
+            except:
+                pass
+
+        return 0.5
+
+
 def evaluate_if_auc(
     df: pd.DataFrame,
     feature_list: List[str],
@@ -549,21 +652,10 @@ def evaluate_if_auc(
     if_params: Dict,
     random_state: int = 0
 ) -> float:
-    """
-    Evaluate Isolation Forest AUC using specified features.
 
-    Args:
-        df: DataFrame with features
-        feature_list: List of feature columns to use
-        y: Binary target variable
-        if_params: Isolation Forest parameters
-        random_state: Random seed
-
-    Returns:
-        AUC score on test set
-    """
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import roc_auc_score
+    from sklearn.preprocessing import StandardScaler
 
     X = df[feature_list].fillna(df[feature_list].median()).values
 
@@ -575,6 +667,7 @@ def evaluate_if_auc(
     X_train_sc = scaler.fit_transform(X_train)
     X_test_sc = scaler.transform(X_test)
 
+    from sklearn.ensemble import IsolationForest
     iforest = IsolationForest(**if_params, random_state=random_state)
     iforest.fit(X_train_sc)
 
@@ -582,16 +675,21 @@ def evaluate_if_auc(
     auc = roc_auc_score(y_test, scores)
     return auc
 
-
 # =============================================================================
-# Cell 7: Load Data and Run Analysis
+# Cell 7: Load Data and Run Analysis (Updated with seeds and Cox C-index)
 # =============================================================================
 
-def run_breast_cancer_analysis():
-    """Main analysis execution."""
+def run_breast_cancer_analysis(random_seed: int = 42):
+    """Main analysis execution with reproducible seeds."""
+
+    # Set global random seeds for reproducibility
+    np.random.seed(random_seed)
+    import random
+    random.seed(random_seed)
 
     print("="*70)
     print("AD-DIFFI Real Data Analysis: Breast Cancer (Table S2)")
+    print("Random Seed: {}".format(random_seed))
     print("="*70)
 
     # Data setup
@@ -608,6 +706,8 @@ def run_breast_cancer_analysis():
     # Feature definitions
     feature_cols = [c for c in df_BC_processed.columns
                     if c not in ['Status', 'Survival Months']]
+
+    print("[INFO] Available features:", feature_cols)
 
     FEATURE_DEFINITIONS = [
         {'name': col, 'type': 'bin' if df_BC_processed[col].nunique() <= 10 else 'cont'}
@@ -654,62 +754,115 @@ def run_breast_cancer_analysis():
     print("\nFeature Importance Comparison (Table S2)")
     print(compare_results.to_markdown(index=False))
 
-    # Evaluate IF AUC
-    print("="*70)
-    print("Isolation Forest AUC Evaluation")
-    print("="*70)
-
+    # Prepare target variables
     df_BC_processed["Status_num"] = (df_BC_processed["Status"] != "Alive").astype(int)
     y_status = df_BC_processed["Status_num"].values
 
-    auc_all = evaluate_if_auc(df_BC_processed, feature_cols, y_status, IF_PARAMS)
-    print("IF AUC (all {} features): {:.4f}".format(len(feature_cols), auc_all))
+    # Evaluate performance metrics
+    print("="*70)
+    print("Performance Evaluation (IF AUC + Cox C-index)")
+    print("="*70)
 
+    # All features
+    auc_all = evaluate_if_auc(df_BC_processed, feature_cols, y_status, IF_PARAMS, random_seed)
+    cindex_all = evaluate_cox_cindex(df_BC_processed, feature_cols, random_seed=random_seed)
+    print("All {:2d} features:  IF AUC={:.4f}, Cox C-index={:.4f}".format(
+      len(feature_cols), auc_all, cindex_all))
+
+    # Original DIFFI top-6
     top_orig = compare_results.sort_values("Original_DIFFI", ascending=False).head(6)
     top_orig_feats = top_orig["Feature"].tolist()
-    auc_orig6 = evaluate_if_auc(df_BC_processed, top_orig_feats, y_status, IF_PARAMS)
-    print("IF AUC (Original DIFFI top-6): {:.4f}".format(auc_orig6))
+    auc_orig6 = evaluate_if_auc(df_BC_processed, top_orig_feats, y_status, IF_PARAMS, random_seed)
+    cindex_orig6 = evaluate_cox_cindex(df_BC_processed, top_orig_feats, random_seed=random_seed)
+    print("Original DIFFI top-6: IF AUC={:.4f}, Cox C-index={:.4f}".format(auc_orig6, cindex_orig6))
 
+    # AD-DIFFI top-6
     top_ad = compare_results.sort_values("AD_DIFFI_RSO_Z", ascending=False).head(6)
     top_ad_feats = top_ad["Feature"].tolist()
-    auc_ad6 = evaluate_if_auc(df_BC_processed, top_ad_feats, y_status, IF_PARAMS)
-    print("IF AUC (AD-DIFFI top-6): {:.4f}".format(auc_ad6))
+    auc_ad6 = evaluate_if_auc(df_BC_processed, top_ad_feats, y_status, IF_PARAMS, random_seed)
+    cindex_ad6 = evaluate_cox_cindex(df_BC_processed, top_ad_feats, random_seed=random_seed)
+    print("AD-DIFFI top-6:     IF AUC={:.4f}, Cox C-index={:.4f}".format(auc_ad6, cindex_ad6))
+
+    # Summary table
+    print("\nSummary Table:")
+    summary_data = {
+        "Method": ["All Features", "Original DIFFI Top-6", "AD-DIFFI Top-6"],
+        "IF AUC": [round(auc_all, 4), round(auc_orig6, 4), round(auc_ad6, 4)],
+        "Cox C-index": [round(cindex_all, 4), round(cindex_orig6, 4), round(cindex_ad6, 4)]
+    }
+    summary_df = pd.DataFrame(summary_data)
+    print(summary_df.to_markdown(index=False))
 
     print("="*70)
     print("Analysis complete.")
     print("="*70)
 
-    return compare_results
+    # Return results for download
+    results_dict = {
+        'feature_importance': compare_results,
+        'performance_summary': summary_df,
+        'top_orig_features': top_orig_feats,
+        'top_ad_features': top_ad_feats,
+        'metrics': {
+            'all': {'if_auc': auc_all, 'cindex': cindex_all},
+            'orig_top6': {'if_auc': auc_orig6, 'cindex': cindex_orig6},
+            'ad_top6': {'if_auc': auc_ad6, 'cindex': cindex_ad6}
+        }
+    }
+    return results_dict
 
 
 # =============================================================================
-# Cell 8: Download Results
+# Cell 8: Download Results (Updated)
 # =============================================================================
 
-def save_and_download_results(compare_results: pd.DataFrame):
+def save_and_download_results(results_dict: dict, random_seed: int = 42):
     """
-    Save comparison results and prepare for download.
+    Save all results and prepare for download.
 
     Args:
-        compare_results: DataFrame with comparison results
+        results_dict: Dictionary containing all analysis results
+        random_seed: Random seed used
     """
-    output_filename = 'breast_cancer_analysis_results.csv'
+    import json
+
+    # Save feature importance
+    compare_results = results_dict['feature_importance']
+    output_filename = f'breast_cancer_analysis_seed{random_seed}.csv'
     compare_results.to_csv(output_filename, index=False)
-    print("[INFO] Results saved to: {}".format(output_filename))
+
+    # Save performance summary
+    summary_df = results_dict['performance_summary']
+    summary_filename = f'breast_cancer_performance_seed{random_seed}.csv'
+    summary_df.to_csv(summary_filename, index=False)
+
+    # Save detailed metrics
+    metrics_filename = f'breast_cancer_metrics_seed{random_seed}.json'
+    with open(metrics_filename, 'w') as f:
+        json.dump(results_dict['metrics'], f, indent=2)
+
+    print("[INFO] Files saved:")
+    print(f"  - {output_filename}")
+    print(f"  - {summary_filename}")
+    print(f"  - {metrics_filename}")
 
     # Download in Colab
+    from google.colab import files
     files.download(output_filename)
-    print("[INFO] Download started...")
+    files.download(summary_filename)
+    files.download(metrics_filename)
+    print("[INFO] Downloads started...")
 
 
 # =============================================================================
-# Main Execution (Run in Colab)
+# Main Execution (Run in Colab) - Updated with seed control
 # =============================================================================
 
 if __name__ == "__main__":
-    # Run analysis
-    results = run_breast_cancer_analysis()
+    # Run analysis with reproducible seed
+    RANDOM_SEED = 42  # Change this value to get different reproducible results
+    results = run_breast_cancer_analysis(random_seed=RANDOM_SEED)
 
     # Save and download results
     if results is not None:
-        save_and_download_results(results)
+        save_and_download_results(results, random_seed=RANDOM_SEED)
