@@ -501,30 +501,30 @@ def compare_diffi_vs_ad_diffi(
 
 def create_binary_features_breast_cancer(df: pd.DataFrame) -> pd.DataFrame:
 
-    df_processed = df[[
-        'Age', 'Tumor Size', 'Regional Node Examined',
-        'Reginol Node Positive', 'Survival Months', 'Status'
-    ]].copy()
+    cont_cols = [
+        'Age',
+        'Tumor Size',
+        'Regional Node Examined',
+        'Reginol Node Positive',
+        'Survival Months'
+    ]
 
-    df_processed['Race_White'] = (df['Race'] == 'White').astype(int)
-    df_processed['Marital_Married'] = df['Marital Status'].isin(
-        ['Married', 'Married-spouse-absent']
-    ).astype(int)
-    df_processed['T_Stage_T1'] = (df['T Stage '] == 'T1').astype(int)
-    df_processed['N_Stage_N0'] = (df['N Stage'] == 'N0').astype(int)
-    df_processed['Stage_II'] = (df['6th Stage'] == 'II').astype(int)
+    target_cols = ['Status']
 
-    diff_map = {
-        'Poorly differentiated': 0,
-        'Moderately differentiated': 1,
-        'Well differentiated': 1,
-        'Poorly differentiated; Moderately differentiated': 0
-    }
-    df_processed['Differentiate_High'] = df['differentiate'].map(diff_map).fillna(1).astype(int)
-    df_processed['Grade_Low'] = df['Grade'].isin(['Grade I', 'Grade II']).astype(int)
-    df_processed['A_Stage_Regional'] = (df['A Stage'] == 'Regional').astype(int)
-    df_processed['Estrogen_Positive'] = (df['Estrogen Status'] == 'Positive').astype(int)
-    df_processed['Progesterone_Positive'] = (df['Progesterone Status'] == 'Positive').astype(int)
+    base_cols = cont_cols + target_cols
+    cat_cols = [c for c in df.columns if c not in base_cols]
+
+    df_cont = df[cont_cols].copy()
+
+    df_cat = pd.get_dummies(df[cat_cols], prefix_sep='_', drop_first=False)
+
+    df_processed = pd.concat([df_cont, df_cat, df[target_cols]], axis=1)
+
+    print("[INFO] One-Hot Encoding applied:")
+    print(f"  Continuous: {len(cont_cols)}")
+    print(f"  Categorical (raw): {len(cat_cols)}")
+    print(f"  Binary (after OHE): {df_cat.shape[1]}")
+    print(f"  Total features (excluding Status): {df_processed.shape[1] - 1}")
 
     return df_processed
 
