@@ -105,44 +105,7 @@ def get_noise_baseline(
     return baselines
 
 # =============================================================================
-# 3. PERFORMANCE EVALUATION
-# =============================================================================
-
-def evaluate_auc(
-    df: pd.DataFrame, 
-    features: List[str], 
-    y: np.ndarray, 
-    model_type: str = "IF", 
-    if_params: Optional[Dict] = None, 
-    seed: int = 42
-) -> float:
-    """
-    Evaluate Anomaly Detection performance using AUC (Isolation Forest or Logistic Regression).
-    """
-    X = df[features].fillna(df[features].median()).values
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.3, random_state=seed, stratify=y
-    )
-
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-
-    if model_type == "IF":
-        params = if_params if if_params else {}
-        model = IsolationForest(**params, random_state=seed)
-        model.fit(X_train_scaled)
-        # Use negative decision function for anomaly score
-        scores = -model.decision_function(X_test_scaled)
-    else:
-        model = LogisticRegression(max_iter=1000, random_state=seed)
-        model.fit(X_train_scaled, y_train)
-        scores = model.predict_proba(X_test_scaled)[:, 1]
-
-    return float(roc_auc_score(y_test, scores))
-
-# =============================================================================
-# 4. SUMMARY & REPORTING
+# 3. SUMMARY & REPORTING
 # =============================================================================
 
 def create_importance_report(
