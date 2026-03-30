@@ -1,18 +1,8 @@
 import numpy as np
 import pandas as pd
-import time
 import urllib.request
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any
-
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score
-from sklearn.linear_model import LogisticRegression
-
-# Import core functions from core.py
-# from ad_diffi.core import diffi_ib_binary_rso, calculate_ad_diffi_zscore
+from typing import Dict, List, Tuple, Any
 
 # =============================================================================
 # 1. DATA LOADING & PREPROCESSING
@@ -43,19 +33,22 @@ def get_feature_metadata(df: pd.DataFrame, dataset_name: str, label_col: str = "
     """
     all_cols = [c for c in df.columns if c != label_col]
     
-    # Dataset-specific continuous feature definitions
+    # Dataset-specific continuous feature definitions (case-insensitive keys)
     cont_map = {
-        "annthyroid": ['TBG', 'TSH', 'T3', 'TT4', 'T4U', 'FTI'],
-        "breast_cancer": [col for col in all_cols if "mean" in col or "worst" in col or "error" in col],
+        "annthyroid": ['tbg', 'tsh', 't3', 'tt4', 't4u', 'fti'],
+        "breast_cancer": [col for col in all_cols if any(x in col.lower() for x in ["mean", "worst", "error"])],
         "hepatitis": ['age', 'bilirubin', 'alk_phosphate', 'sgot', 'albumin', 'protime']
     }
     
-    target_cont = cont_map.get(dataset_name, [])
+    target_cont = cont_map.get(dataset_name.lower(), [])
     
-    # Filter columns that actually exist in the dataframe
-    actual_cont = [c for c in target_cont if c in df.columns]
+    # Identify actual continuous columns present in the dataframe (case-insensitive check)
+    actual_cont = []
+    for col in all_cols:
+        if col.lower() in target_cont or col in target_cont:
+            actual_cont.append(col)
     
-    # If no specific rule, assume non-binary (more than 2 unique values) are continuous
+    # Fallback: if no specific rule matched, assume features with >2 unique values are continuous
     if not actual_cont:
         actual_cont = [c for c in all_cols if df[c].nunique() > 2]
 
@@ -77,7 +70,7 @@ def get_noise_baseline(
     """
     Establish a noise baseline for Z-normalization using uniform noise data.
     """
-    # Note: Requires diffi_ib_binary_rso from core.py
+    from sklearn.ensemble import IsolationForest
     from ad_diffi.core import diffi_ib_binary_rso
     
     scores_list = []
@@ -85,7 +78,9 @@ def get_noise_baseline(
     bin_indices = [i for i, t in feature_types.items() if t == 'bin']
 
     for k in range(n_iter):
+        # Generate 2000 samples of pure noise
         X_noise = np.random.uniform(0, 1, size=(2000, X_dim))
+        
         if_model = IsolationForest(random_state=k, **if_params)
         if_model.fit(X_noise)
         
@@ -97,8 +92,12 @@ def get_noise_baseline(
     baselines = {}
     for key, indices in [('cont', cont_indices), ('bin', bin_indices)]:
         if indices:
+            # Calculate mean/sd across all noise iterations for this feature type
             sub_scores = M[:, indices]
-            baselines[key] = {'mean': float(sub_scores.mean()), 'sd': float(sub_scores.std())}
+            baselines[key] = {
+                'mean': float(np.mean(sub_scores)), 
+                'sd': float(np.std(sub_scores))
+            }
         else:
             baselines[key] = {'mean': 0.0, 'sd': 1.0}
             
@@ -124,8 +123,9 @@ def create_importance_report(
         "AD_DIFFI": np.round(ad_scores, 4)
     })
     
-    report["Rank_Orig"] = report["Original_DIFFI"].rank(ascending=False)
-    report["Rank_AD"] = report["AD_DIFFI"].rank(ascending=False)
-    report["Rank_Delta"] = report["Rank_AD"] - report["Rank_Orig"]
+    # Higher score means higher importance (Rank 1 = Most important)
+    report["Rank_Orig"] = report["Original_DIFFI"].rank(ascending=False, method='min')
+    report["Rank_AD"] = report["AD_DIFFI"].rank(ascending=False, method='min')
+    report["Rank_Delta"] = report["Rank_Orig"] - report["Rank_AD"] # Positive means rank improved in AD-DIFFI
     
     return report.sort_values("AD_DIFFI", ascending=False)
