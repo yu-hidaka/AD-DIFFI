@@ -42,7 +42,6 @@ def run_diffi_comparison_benchmark(
         if_params=if_params,
         n_iter=n_iter_noise
     )
-    # baselines is likely (cont_mean, cont_std, bin_mean, bin_std)
     cont_mean, cont_sd, bin_mean, bin_sd = baselines
 
     orig_scores_list = []
@@ -57,7 +56,7 @@ def run_diffi_comparison_benchmark(
         iforest = IsolationForest(random_state=k, **current_params)
         iforest.fit(X_scaled)
 
-        # [FIXED] Pass the noise_baselines tuple to the original function
+        # Pass the noise_baselines to the original function
         res_orig = diffi_func_orig(iforest, X_scaled, noise_baselines=baselines)
         fi_orig = res_orig[0] if isinstance(res_orig, (tuple, list)) else res_orig
         orig_scores_list.append(fi_orig)
