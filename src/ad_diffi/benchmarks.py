@@ -1,3 +1,4 @@
+%%writefile /content/AD-DIFFI/src/ad_diffi/benchmarks.py
 """
 Performance and Stability Benchmarks for AD-DIFFI.
 This module provides logic to compare Feature Importance (FI) rankings 
@@ -23,36 +24,26 @@ def run_diffi_comparison_benchmark(
     feature_names: List[str],
     feature_types: Dict[int, str],
     if_params: Dict[str, Any],
-    diffi_func_orig: Any,      # Original DIFFI function
-    diffi_func_ad: Any,        # AD-DIFFI (RSO) function
-    noise_baseline_func: Any,  # Function to calculate noise baseline
+    diffi_func_orig: Any,      
+    diffi_func_ad: Any,        
+    noise_baseline_func: Any,  
     n_iter_noise: int = 20,
     n_iter_main: int = 20,
 ) -> pd.DataFrame:
     """
     Executes a benchmark comparing Original DIFFI and AD-DIFFI (RSO + Z-Normalization).
-    
-    Args:
-        X: Feature matrix.
-        feature_names: List of feature names.
-        feature_types: Dictionary mapping feature index to 'cont' or 'bin'.
-        if_params: Parameters for the Isolation Forest.
-        diffi_func_orig: The standard DIFFI implementation.
-        diffi_func_ad: The AD-DIFFI (RSO) implementation.
-        noise_baseline_func: Logic to calculate baseline mean/std for Z-score.
-        
-    Returns:
-        pd.DataFrame: Comparison of importance scores and rankings.
     """
     X_scaled = StandardScaler().fit_transform(X)
 
-    # 1. Establish Noise Baseline for Z-normalization
-    cont_mean, cont_sd, bin_mean, bin_sd = noise_baseline_func(
+    # 1. Establish Noise Baseline
+    baselines = noise_baseline_func(
         X_dim=X_scaled.shape[1],
         feature_types=feature_types,
         if_params=if_params,
         n_iter=n_iter_noise
     )
+    # baselines is likely (cont_mean, cont_std, bin_mean, bin_std)
+    cont_mean, cont_sd, bin_mean, bin_sd = baselines
 
     orig_scores_list = []
     ad_raw_list = []
@@ -60,16 +51,14 @@ def run_diffi_comparison_benchmark(
     print(f"Running {n_iter_main} iterations for feature importance comparison...")
     
     for k in range(n_iter_main):
-        # Prevent 'multiple values for random_state' error
         current_params = if_params.copy()
         current_params.pop('random_state', None)
         
         iforest = IsolationForest(random_state=k, **current_params)
         iforest.fit(X_scaled)
 
-        # Calculate Original DIFFI
-        # Handles both tuple (scores, importance) and single array returns
-        res_orig = diffi_func_orig(iforest, X_scaled)
+        # [FIXED] Pass the noise_baselines tuple to the original function
+        res_orig = diffi_func_orig(iforest, X_scaled, noise_baselines=baselines)
         fi_orig = res_orig[0] if isinstance(res_orig, (tuple, list)) else res_orig
         orig_scores_list.append(fi_orig)
 
@@ -77,11 +66,11 @@ def run_diffi_comparison_benchmark(
         fi_ad = diffi_func_ad(iforest, X_scaled, feature_types)
         ad_raw_list.append(fi_ad)
 
-    # Calculate means across iterations
+    # Calculate means
     mean_orig = np.mean(orig_scores_list, axis=0)
     matrix_ad_raw = np.vstack(ad_raw_list)
 
-    # 2. Apply Z-normalization (Baseline Correction)
+    # 2. Apply Z-normalization for AD-DIFFI
     ad_z_scores = matrix_ad_raw.copy()
     for i in range(len(feature_names)):
         f_type = feature_types[i]
@@ -102,13 +91,11 @@ def run_diffi_comparison_benchmark(
         "AD_DIFFI_RSO_Z": np.round(mean_ad_z, 4),
     })
 
-    # Add Ranking metrics
     compare_df["Rank_Original"] = compare_df["Original_DIFFI"].rank(ascending=False)
     compare_df["Rank_AD_DIFFI"] = compare_df["AD_DIFFI_RSO_Z"].rank(ascending=False)
     compare_df["Rank_Change"] = compare_df["Rank_AD_DIFFI"] - compare_df["Rank_Original"]
 
     return compare_df.sort_values("AD_DIFFI_RSO_Z", ascending=False)
-
 
 # =============================================================================
 # 2. PERFORMANCE EVALUATION METRICS
@@ -123,13 +110,9 @@ def evaluate_feature_set_auc(
     test_size: float = 0.3,
     random_state: int = 42
 ) -> float:
-    """
-    Evaluates the AUC of a specific feature subset.
-    """
     if not features:
         return 0.5
 
-    # Data preparation
     X = df[features].fillna(df[features].median()).values
     X_train, X_test, y_train, y_test = train_test_split(
         X, target, test_size=test_size, random_state=random_state, stratify=target
@@ -139,9 +122,7 @@ def evaluate_feature_set_auc(
     X_train_sc = scaler.fit_transform(X_train)
     X_test_sc = scaler.transform(X_test)
 
-    # Model execution
     if model_type.upper() == 'IF':
-        # Ensure random_state is not duplicated
         if_params = (params or {}).copy()
         if_params.pop('random_state', None)
         model = IsolationForest(**if_params, random_state=random_state)
@@ -154,36 +135,12 @@ def evaluate_feature_set_auc(
 
     return float(roc_auc_score(y_test, scores))
 
-
-# =============================================================================
-# 3. STABILITY & SELECTION HELPERS
-# =============================================================================
-
-def calculate_rank_stability(
-    importance_df: pd.DataFrame, 
-    col_a: str = 'Original_DIFFI', 
-    col_b: str = 'AD_DIFFI_RSO_Z'
-) -> Dict[str, float]:
-    """
-    Calculates the correlation and absolute displacement between two rankings.
-    """
+def calculate_rank_stability(importance_df, col_a='Original_DIFFI', col_b='AD_DIFFI_RSO_Z'):
     rank_a = importance_df[col_a].rank(ascending=False)
     rank_b = importance_df[col_b].rank(ascending=False)
-    
     rho, _ = spearmanr(rank_a, rank_b)
-    mean_abs_delta = np.abs(rank_a - rank_b).mean()
-    
-    return {
-        'spearman_rho': float(rho), 
-        'mean_abs_rank_delta': float(mean_abs_delta)
-    }
+    mard = np.abs(rank_a - rank_b).mean()
+    return {'spearman_rho': float(rho), 'mean_abs_rank_delta': float(mard)}
 
-def get_top_k_features(
-    importance_df: pd.DataFrame, 
-    score_col: str, 
-    k: int = 6
-) -> List[str]:
-    """
-    Extracts the names of the top-k features based on a specific score column.
-    """
+def get_top_k_features(importance_df, score_col, k=6):
     return importance_df.sort_values(by=score_col, ascending=False).head(k)['Feature'].tolist()
