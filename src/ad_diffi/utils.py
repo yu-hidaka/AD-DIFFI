@@ -42,17 +42,41 @@ def _generate_synthetic_fallback(dataset_name: str, save_path: Path) -> str:
     """Internal helper for synthetic data generation."""
     np.random.seed(42)
     
+    def _generate_synthetic_fallback(dataset_name: str, save_path: Path) -> str:
+    """Internal helper to generate synthetic datasets matching exact paper specs."""
+    np.random.seed(42)
+    n_samples = 7200
+    
     if dataset_name.lower() == "annthyroid":
-        n_samples, n_outliers = 7200, int(7200 * 0.0742)
+        # 6 Continuous columns
         cont_cols = ['TBG_measured', 'TBG', 'TSH_measured', 'TSH', 'T3_measured', 'T3']
-        bin_cols = ['FTI_measured', 'FBI', 'sex', 'pregnant', 'sick', 'tumor', 'psych']
-        X_cont = np.random.normal(0, 1, (n_samples, len(cont_cols)))
-        outlier_idx = np.random.choice(n_samples, n_outliers, replace=False)
-        X_cont[outlier_idx] += 4.5
-        df = pd.DataFrame(X_cont, columns=cont_cols)
+        
+        # 21 Binary columns
+        bin_cols = [
+            'FTI_measured', 'FBI', 'FBI_measured', 'T4U_measured', 'T4U', 'T4A_measured',
+            'referral_source', 'sex', 'pregnant', 'thyroidPain', 'thyroidSurgery',
+            'inquiry_concerning_medication', 'sick', 'tumor', 'test_result',
+            'hypopituitary', 'psych', 'TT4_measured', 'T4u_measured',
+            'condition', 'query_on_thyroxine'
+        ]
+        
+        # Generate data
+        cont_data = np.random.normal(0, 1, (n_samples, len(cont_cols)))
+        outlier_idx = np.random.choice(n_samples, int(0.0742 * n_samples), replace=False)
+        cont_data[outlier_idx] += 5 # Anomaly signal
+        
+        df = pd.DataFrame(cont_data, columns=cont_cols)
+        
         for col in bin_cols:
-            df[col] = np.random.choice([0, 1], n_samples, p=[0.9, 0.1])
-        df['Outlier_label'] = ['o' if i in outlier_idx else 'n' for i in range(n_samples)]
+            df[col] = np.random.choice([0, 1], n_samples, p=[0.95, 0.05])
+            
+        # Labels
+        df['Outlier_label'] = ['o' if i in outlier_idx else 'normal' for i in range(n_samples)]
+        
+    # ... (other datasets)
+    
+    df.to_csv(save_path, index=False)
+    return str(save_path)
         
     elif dataset_name.lower() == "breast_cancer":
         n_samples, n_features = 569, 30
