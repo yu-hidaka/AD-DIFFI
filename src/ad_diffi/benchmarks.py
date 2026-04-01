@@ -1,11 +1,12 @@
 """
 Performance and Stability Benchmarks for AD-DIFFI.
-Includes AUC for classification, C-index for survival analysis, and DIFFI comparison logic.
+This module provides logic to compare Feature Importance (FI) rankings 
+and evaluate anomaly detection performance using AUC.
 """
 
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
@@ -13,16 +14,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import IsolationForest
 from scipy.stats import spearmanr
 
-# External dependency check for Survival Analysis
-try:
-    from lifelines import CoxPHFitter
-    from lifelines.utils import concordance_index
-    HAS_LIFELINES = True
-except ImportError:
-    HAS_LIFELINES = False
-
 # =============================================================================
-# 1. Feature Importance Comparison Logic
+# 1. FEATURE IMPORTANCE COMPARISON LOGIC
 # =============================================================================
 
 def run_diffi_comparison_benchmark(
@@ -30,18 +23,30 @@ def run_diffi_comparison_benchmark(
     feature_names: List[str],
     feature_types: Dict[int, str],
     if_params: Dict[str, Any],
-    diffi_func_orig,           # Inject original DIFFI function
-    diffi_func_ad,             # Inject AD-DIFFI (RSO) function
-    noise_baseline_func,       # Inject noise baseline calculation function
+    diffi_func_orig: Any,      # Original DIFFI function
+    diffi_func_ad: Any,        # AD-DIFFI (RSO) function
+    noise_baseline_func: Any,  # Function to calculate noise baseline
     n_iter_noise: int = 20,
     n_iter_main: int = 20,
 ) -> pd.DataFrame:
     """
-    Compare Original DIFFI vs AD-DIFFI (RSO + Z-normalization).
+    Executes a benchmark comparing Original DIFFI and AD-DIFFI (RSO + Z-Normalization).
+    
+    Args:
+        X: Feature matrix.
+        feature_names: List of feature names.
+        feature_types: Dictionary mapping feature index to 'cont' or 'bin'.
+        if_params: Parameters for the Isolation Forest.
+        diffi_func_orig: The standard DIFFI implementation.
+        diffi_func_ad: The AD-DIFFI (RSO) implementation.
+        noise_baseline_func: Logic to calculate baseline mean/std for Z-score.
+        
+    Returns:
+        pd.DataFrame: Comparison of importance scores and rankings.
     """
     X_scaled = StandardScaler().fit_transform(X)
 
-    # 1. Get Noise Baseline (RSO-based)
+    # 1. Establish Noise Baseline for Z-normalization
     cont_mean, cont_sd, bin_mean, bin_sd = noise_baseline_func(
         X_dim=X_scaled.shape[1],
         feature_types=feature_types,
@@ -50,47 +55,54 @@ def run_diffi_comparison_benchmark(
     )
 
     orig_scores_list = []
-    rso_raw_list = []
+    ad_raw_list = []
 
     print(f"Running {n_iter_main} iterations for feature importance comparison...")
+    
     for k in range(n_iter_main):
-        iforest = IsolationForest(random_state=k, **if_params)
+        # Prevent 'multiple values for random_state' error
+        current_params = if_params.copy()
+        current_params.pop('random_state', None)
+        
+        iforest = IsolationForest(random_state=k, **current_params)
         iforest.fit(X_scaled)
 
-        # Original DIFFI (adjust_iic=True)
-        fi_orig, _ = diffi_func_orig(iforest, X_scaled, adjust_iic=True)
+        # Calculate Original DIFFI
+        # Handles both tuple (scores, importance) and single array returns
+        res_orig = diffi_func_orig(iforest, X_scaled)
+        fi_orig = res_orig[0] if isinstance(res_orig, (tuple, list)) else res_orig
         orig_scores_list.append(fi_orig)
 
-        # AD-DIFFI Raw (RSO-enabled)
-        fi_rso = diffi_func_ad(iforest, X_scaled, feature_types)
-        rso_raw_list.append(fi_rso)
+        # Calculate AD-DIFFI (RSO)
+        fi_ad = diffi_func_ad(iforest, X_scaled, feature_types)
+        ad_raw_list.append(fi_ad)
 
-    # Calculate means
+    # Calculate means across iterations
     mean_orig = np.mean(orig_scores_list, axis=0)
-    M_rso_raw = np.vstack(rso_raw_list)
+    matrix_ad_raw = np.vstack(ad_raw_list)
 
-    # 2. Z-normalization (Baseline Correction)
-    rso_z_scores = M_rso_raw.copy()
+    # 2. Apply Z-normalization (Baseline Correction)
+    ad_z_scores = matrix_ad_raw.copy()
     for i in range(len(feature_names)):
         f_type = feature_types[i]
         mu, sigma = (cont_mean, cont_sd) if f_type == 'cont' else (bin_mean, bin_sd)
         
         if sigma > 0:
-            rso_z_scores[:, i] = (M_rso_raw[:, i] - mu) / sigma
+            ad_z_scores[:, i] = (matrix_ad_raw[:, i] - mu) / sigma
         else:
-            rso_z_scores[:, i] = 0.0
+            ad_z_scores[:, i] = 0.0
 
-    mean_rso_z = np.mean(rso_z_scores, axis=0)
+    mean_ad_z = np.mean(ad_z_scores, axis=0)
 
-    # Aggregate Results
+    # 3. Create Comparison Report
     compare_df = pd.DataFrame({
         "Feature": feature_names,
         "Type": [feature_types[i] for i in range(len(feature_names))],
         "Original_DIFFI": np.round(mean_orig, 4),
-        "AD_DIFFI_RSO_Z": np.round(mean_rso_z, 4),
+        "AD_DIFFI_RSO_Z": np.round(mean_ad_z, 4),
     })
 
-    # Ranking and Delta Calculation
+    # Add Ranking metrics
     compare_df["Rank_Original"] = compare_df["Original_DIFFI"].rank(ascending=False)
     compare_df["Rank_AD_DIFFI"] = compare_df["AD_DIFFI_RSO_Z"].rank(ascending=False)
     compare_df["Rank_Change"] = compare_df["Rank_AD_DIFFI"] - compare_df["Rank_Original"]
@@ -99,7 +111,7 @@ def run_diffi_comparison_benchmark(
 
 
 # =============================================================================
-# 2. Evaluation Metrics (AUC & C-Index)
+# 2. PERFORMANCE EVALUATION METRICS
 # =============================================================================
 
 def evaluate_feature_set_auc(
@@ -112,11 +124,12 @@ def evaluate_feature_set_auc(
     random_state: int = 42
 ) -> float:
     """
-    Evaluate AUC for classification tasks (e.g., Annthyroid).
+    Evaluates the AUC of a specific feature subset.
     """
     if not features:
         return 0.5
 
+    # Data preparation
     X = df[features].fillna(df[features].median()).values
     X_train, X_test, y_train, y_test = train_test_split(
         X, target, test_size=test_size, random_state=random_state, stratify=target
@@ -126,60 +139,24 @@ def evaluate_feature_set_auc(
     X_train_sc = scaler.fit_transform(X_train)
     X_test_sc = scaler.transform(X_test)
 
+    # Model execution
     if model_type.upper() == 'IF':
-        model = IsolationForest(**(params or {}), random_state=random_state)
+        # Ensure random_state is not duplicated
+        if_params = (params or {}).copy()
+        if_params.pop('random_state', None)
+        model = IsolationForest(**if_params, random_state=random_state)
         model.fit(X_train_sc)
         scores = -model.decision_function(X_test_sc)
-    elif model_type.upper() == 'LR':
+    else:
         model = LogisticRegression(max_iter=1000, random_state=random_state)
         model.fit(X_train_sc, y_train)
         scores = model.predict_proba(X_test_sc)[:, 1]
-    else:
-        raise ValueError(f"Unsupported model_type: {model_type}")
 
     return float(roc_auc_score(y_test, scores))
 
-def evaluate_feature_set_cindex(
-    df: pd.DataFrame,
-    features: List[str],
-    duration_col: str,
-    event_col: str,
-    test_size: float = 0.3,
-    random_state: int = 42
-) -> float:
-    """
-    Evaluate C-Index for survival analysis tasks (Cox PH Model).
-    """
-    if not HAS_LIFELINES:
-        print("[ERROR] lifelines library is not installed.")
-        return 0.0
-    
-    if not features:
-        return 0.5
-
-    data = df[features + [duration_col, event_col]].copy()
-    data = data.fillna(data.median())
-    
-    train_df, test_df = train_test_split(
-        data, test_size=test_size, random_state=random_state
-    )
-
-    scaler = StandardScaler()
-    train_df[features] = scaler.fit_transform(train_df[features])
-    test_df[features] = scaler.transform(test_df[features])
-
-    try:
-        cph = CoxPHFitter(penalizer=0.1)
-        cph.fit(train_df, duration_col=duration_col, event_col=event_col)
-        scores = cph.predict_partial_hazard(test_df)
-        c_index = concordance_index(test_df[duration_col], -scores, test_df[event_col])
-        return float(c_index)
-    except Exception as e:
-        print(f"[WARNING] Cox model failed: {e}")
-        return 0.5
 
 # =============================================================================
-# 3. Stability Helpers
+# 3. STABILITY & SELECTION HELPERS
 # =============================================================================
 
 def calculate_rank_stability(
@@ -188,18 +165,25 @@ def calculate_rank_stability(
     col_b: str = 'AD_DIFFI_RSO_Z'
 ) -> Dict[str, float]:
     """
-    Calculate Spearman's Rho and Mean Absolute Rank Delta (MARD).
+    Calculates the correlation and absolute displacement between two rankings.
     """
     rank_a = importance_df[col_a].rank(ascending=False)
     rank_b = importance_df[col_b].rank(ascending=False)
     
     rho, _ = spearmanr(rank_a, rank_b)
-    mard = np.abs(rank_a - rank_b).mean()
+    mean_abs_delta = np.abs(rank_a - rank_b).mean()
     
-    return {'spearman_rho': float(rho), 'mean_abs_rank_delta': float(mard)}
+    return {
+        'spearman_rho': float(rho), 
+        'mean_abs_rank_delta': float(mean_abs_delta)
+    }
 
-def get_top_k_features(importance_df: pd.DataFrame, score_col: str, k: int = 6) -> List[str]:
+def get_top_k_features(
+    importance_df: pd.DataFrame, 
+    score_col: str, 
+    k: int = 6
+) -> List[str]:
     """
-    Get names of the top-k features based on score.
+    Extracts the names of the top-k features based on a specific score column.
     """
     return importance_df.sort_values(by=score_col, ascending=False).head(k)['Feature'].tolist()
