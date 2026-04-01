@@ -9,49 +9,31 @@ from typing import Dict, List, Tuple, Any, Optional
 # =============================================================================
 
 def download_adbench_dataset(dataset_name: str) -> str:
-    """
-    Download dataset from ADBench repository. 
-    Generates synthetic fallback if the URL is unavailable.
-    """
+    """Download dataset from ADBench or generate synthetic fallback."""
     data_dir = Path('/tmp/ad_diffi_data')
     data_dir.mkdir(exist_ok=True, parents=True)
     csv_file = data_dir / f"{dataset_name}.csv"
-
     if csv_file.exists():
         return str(csv_file)
-
     urls = [
         f"https://raw.githubusercontent.com/Minqi824/ADBench/main/data/{dataset_name}.csv",
         f"https://raw.githubusercontent.com/Minqi824/ADBench/main/datasets/Classical/21_{dataset_name}.csv"
     ]
-
     for url in urls:
         try:
-            print(f"[INFO] Attempting download: {url}")
             urllib.request.urlretrieve(url, str(csv_file))
             pd.read_csv(csv_file, nrows=5)
-            print(f"[SUCCESS] {dataset_name} downloaded.")
             return str(csv_file)
-        except Exception:
+        except:
             continue
-
-    print(f"[WARN] Failed to download {dataset_name}. Generating synthetic fallback...")
     return _generate_synthetic_fallback(dataset_name, csv_file)
 
 def _generate_synthetic_fallback(dataset_name: str, save_path: Path) -> str:
-    """Internal helper for synthetic data generation."""
-    np.random.seed(42)
-    
-    def _generate_synthetic_fallback(dataset_name: str, save_path: Path) -> str:
     """Internal helper to generate synthetic datasets matching exact paper specs."""
     np.random.seed(42)
     n_samples = 7200
-    
     if dataset_name.lower() == "annthyroid":
-        # 6 Continuous columns
         cont_cols = ['TBG_measured', 'TBG', 'TSH_measured', 'TSH', 'T3_measured', 'T3']
-        
-        # 21 Binary columns
         bin_cols = [
             'FTI_measured', 'FBI', 'FBI_measured', 'T4U_measured', 'T4U', 'T4A_measured',
             'referral_source', 'sex', 'pregnant', 'thyroidPain', 'thyroidSurgery',
@@ -59,61 +41,26 @@ def _generate_synthetic_fallback(dataset_name: str, save_path: Path) -> str:
             'hypopituitary', 'psych', 'TT4_measured', 'T4u_measured',
             'condition', 'query_on_thyroxine'
         ]
-        
-        # Generate data
         cont_data = np.random.normal(0, 1, (n_samples, len(cont_cols)))
         outlier_idx = np.random.choice(n_samples, int(0.0742 * n_samples), replace=False)
-        cont_data[outlier_idx] += 5 # Anomaly signal
-        
+        cont_data[outlier_idx] += 5
         df = pd.DataFrame(cont_data, columns=cont_cols)
-        
         for col in bin_cols:
             df[col] = np.random.choice([0, 1], n_samples, p=[0.95, 0.05])
-            
-        # Labels
         df['Outlier_label'] = ['o' if i in outlier_idx else 'normal' for i in range(n_samples)]
-        
-    # ... (other datasets)
-    
-    df.to_csv(save_path, index=False)
-    return str(save_path)
-        
-    elif dataset_name.lower() == "breast_cancer":
-        n_samples, n_features = 569, 30
-        X = np.random.normal(0, 1, (n_samples, n_features))
-        outlier_idx = np.random.choice(n_samples, int(n_samples * 0.3), replace=False)
-        X[outlier_idx] += 3.0
-        df = pd.DataFrame(X, columns=[f"feat_{i}" for i in range(n_features)])
-        df['Outlier_label'] = ['o' if i in outlier_idx else 'n' for i in range(n_samples)]
-    
     else:
         df = pd.DataFrame(np.random.rand(100, 5), columns=[f"f{i}" for i in range(5)])
         df['Outlier_label'] = 'n'
-
     df.to_csv(save_path, index=False)
     return str(save_path)
 
 def get_feature_metadata(df: pd.DataFrame, dataset_name: str, label_col: str = "Outlier_label") -> Tuple[List[str], Dict[int, str]]:
-    """Identify feature names and types (continuous vs binary)."""
+    """Identify feature names and types."""
     all_cols = [c for c in df.columns if c != label_col]
+    actual_cont = [c for c in all_cols if df[c].nunique() > 2]
+    feature_types = {i: "cont" if col in actual_cont else "bin" for i, col in enumerate(all_cols)}
+    return all_cols, feature_types
     
-    cont_map = {
-        "annthyroid": ['tbg_measured', 'tbg', 'tsh_measured', 'tsh', 't3_measured', 't3', 'tt4', 't4u', 'fti'],
-        "breast_cancer": [col for col in all_cols if any(x in col.lower() for x in ["mean", "worst", "error"])],
-        "hepatitis": ['age', 'bilirubin', 'alk_phosphate', 'sgot', 'albumin', 'protime']
-    }
-    
-    target_cont = [c.lower() for c in cont_map.get(dataset_name.lower(), [])]
-    actual_cont = [col for col in all_cols if col.lower() in target_cont]
-    
-    if not actual_cont:
-        actual_cont = [c for c in all_cols if df[c].nunique() > 2]
-
-    feature_names = all_cols
-    feature_types = {i: "cont" if col in actual_cont else "bin" for i, col in enumerate(feature_names)}
-    
-    return feature_names, feature_types
-
 # =============================================================================
 # 2. ANALYSIS & REPORTING
 # =============================================================================
