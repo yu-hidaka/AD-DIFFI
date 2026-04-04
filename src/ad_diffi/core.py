@@ -133,3 +133,29 @@ def calculate_ad_diffi_zscore(
             z_scores[i] = 0.0
             
     return z_scores
+
+def get_noise_baselines(X_dim: int, feature_types: Dict[int, str], if_params: Dict, n_iter: int = 20) -> Tuple[float, float, float, float]:
+    """
+    Establish noise baselines for Z-score normalization.
+    Returns: (cont_mean, cont_sd, bin_mean, bin_sd)
+    """
+    noise_scores = []
+    cont_idx = [i for i, t in feature_types.items() if t == 'cont']
+    bin_idx = [i for i, t in feature_types.items() if t == 'bin']
+
+    for i in range(n_iter):
+        X_noise = np.random.uniform(0, 1, (if_params.get('max_samples', 512), X_dim))
+        p = if_params.copy()
+        p.pop('random_state', None)
+        m_noise = IsolationForest(**p, random_state=i).fit(X_noise)
+        
+        # Calculate raw RSO scores for this noise instance
+        scores = diffi_ib_binary_rso(m_noise, X_noise, feature_types)
+        noise_scores.append(scores)
+
+    M_noise = np.vstack(noise_scores)
+    
+    c_mean, c_std = (M_noise[:, cont_idx].mean(), M_noise[:, cont_idx].std()) if cont_idx else (0.0, 1.0)
+    b_mean, b_std = (M_noise[:, bin_idx].mean(), M_noise[:, bin_idx].std()) if bin_idx else (0.0, 1.0)
+    
+    return c_mean, (c_std if c_std > 0 else 1.0), b_mean, (b_std if b_std > 0 else 1.0)
