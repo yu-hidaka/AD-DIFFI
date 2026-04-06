@@ -1,18 +1,27 @@
-# AD-DIFFI: Adjusted Depth-based Isolation Forest Feature Importance
+# AD-DIFFI: Robust Feature Importance for Mixed-Type Data in Isolation Forest
 
-**Code repository for the paper:**  
-*Adjust DIFFI (AD-DIFFI): Robust Feature Importance for Mixed-Type Data in Isolation Forest*  
-Yu Hidaka, Toru Imai, Katsuhiro Omae (Kyoto University, 2026) [PDF](ADDIFFI_main_tex.pdf)
+Official implementation of the paper: 
+**"Adjust DIFFI (AD-DIFFI): Robust Feature Importance for Mixed-Type Data in Isolation Forest"**
 
-[![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
-[![scikit-learn](https://img.shields.io/badge/scikit--learn-1.3%2B-yellow)](https://scikit-learn.org/)
-[![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/yu-hidaka/AD-DIFFI/blob/main/simulation_ch3.ipynb)
+## Overview
+AD-DIFFI (Adjusted DIFFI) is a feature importance method for Isolation Forest, specifically optimized for mixed-type datasets containing both continuous and binary features. It addresses two primary biases found in the original DIFFI (Depth-based Isolation Forest Feature Importance) method:
 
-## Quick Start (1-click Reproduction)
+1.  **Overestimation of Binary Noise**: Prevents binary features from being incorrectly ranked as important due to high split frequency in deep nodes.
+2.  **Underestimation of Binary Signals**: Ensures that binary features that isolate anomalies early (near the root) are correctly valued.
 
-### Chapter 3: DIFFI Binary Bias Simulation (Figure 1)
+The core components of the method are **Root-Split-Only (RSO)** constraints and **Noise-based Z-normalization**.
 
-**Python (.py):**
+## Repository Structure
+- **src/**: Contains the core implementation of the AD-DIFFI algorithm.
+- **notebooks/**: Contains Jupyter Notebooks for reproducing the results presented in the paper.
+    - `01_Simulations.ipynb`: Validates the bias correction performance using synthetic data.
+    - `02_Real_world_data_analysis.ipynb`: Evaluates performance on clinical benchmark datasets (Annthyroid, Breast Cancer, and Hepatitis).
+- **requirements.txt**: List of Python dependencies.
+
+## Installation
+This project requires Python 3.12 or later. To set up the environment, clone the repository and install the dependencies:
+
 ```bash
+git clone [https://github.com/yu-hidaka/AD-DIFFI.git](https://github.com/yu-hidaka/AD-DIFFI.git)
+cd AD-DIFFI
 pip install -r requirements.txt
-python simulation_ch3.py
