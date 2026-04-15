@@ -1,0 +1,31 @@
+# --- Security / Credentials ---
+# DO NOT remove these. Prevents leaking your Kaggle API key.
+.kaggle/
+kaggle.json
+
+# --- Python Environment ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env
+
+# --- Data & Temporary Files ---
+# Exclude locally downloaded or generated datasets
+data/
+/tmp/ad_diffi_data/
+*.csv
+*.pkl
+*.zip
+
+# --- Jupyter Notebook ---
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# --- OS / IDE ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
