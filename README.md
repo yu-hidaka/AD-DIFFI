@@ -4,13 +4,17 @@ Official implementation of the paper:
 **"Adjusted DIFFI (AD-DIFFI): Robust Feature Importance for Mixed-Type Data in Isolation Forest"**
 
 ## Overview
-AD-DIFFI (Adjusted Depth-based Isolation Forest Feature Importance) is a novel feature importance method specifically designed for **mixed-type medical and biological data**. It addresses the inherent biases in the original DIFFI method when handling datasets with both continuous and binary features.
+AD-DIFFI (Adjusted Depth-based Isolation Forest Feature Importance) is a feature importance method specifically designed for **mixed-type medical and biological datasets**. 
 
-### Key Features
-- **Root-Split-Only (RSO)**: Corrects the overestimation of binary noise by focusing on early splits.
-- **Z-score Normalization**: Standardizes importance scores using a noise-based baseline.
-- **Reproducibility**: Automated data acquisition and preprocessing for all benchmark datasets.
+Standard DIFFI often exhibits **feature-type asymmetry**, where structural differences between continuous and binary features lead to **ranking distortion**. AD-DIFFI addresses these structural discrepancies and ensures more reliable feature assessment by integrating:
 
+- **Root-Split-Only (RSO)**: Focuses on early splits within the Isolation Forest to capture global structural information, mitigating the disproportionate influence of feature-type characteristics in deeper nodes.
+- **Z-score Normalization**: Standardizes importance scores based on a **null Data Generating Process (DGP)**. This approach corrects structural asymmetries by evaluating the deviation from expected values under null conditions, ensuring comparability across diverse feature types.
+
+## Theoretical and Practical Validation
+The robustness of AD-DIFFI has been validated through:
+- **Quantification of Asymmetry**: Using a null DGP to formalize and quantify the structural gap between feature types, demonstrating that AD-DIFFI maintains equitable importance scores under non-informative conditions.
+- **Clinical Benchmarking**: Validated on multiple clinical datasets (e.g., Stroke, Thyroid, Hepatitis), where AD-DIFFI successfully identifies key predictors consistent with domain knowledge, even in the presence of mixed-type variables.
 ---
 
 ## Repository Structure
