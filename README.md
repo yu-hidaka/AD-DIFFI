@@ -50,15 +50,14 @@ AD-DIFFI/
 
 ## Installation
 
-This project requires **Python 3.12 or later**.
+This project requires Python 3.12 or later.
 
-Clone the repository from the main branch:
+Clone the repository from the main branch and install the dependencies:
 
 ```bash
 git clone [https://github.com/yu-hidaka/AD-DIFFI.git](https://github.com/yu-hidaka/AD-DIFFI.git)
 cd AD-DIFFI
 pip install -r requirements.txt
-```
 
 ## Usage
 
