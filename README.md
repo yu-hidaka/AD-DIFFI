@@ -1,30 +1,41 @@
-# AD-DIFFI: Adjusted DIFFI for Robust Feature Importance in Isolation Forest
+# AD-DIFFI: Adjusted Depth-based Isolation Forest Feature Importance for Robust Feature Ranking on Mixed-type Data
 
-Official implementation of the paper:  
-**"Adjusted DIFFI (AD-DIFFI): Robust Feature Importance for Mixed-Type Data in Isolation Forest"**
+Official implementation of the method described in the manuscript:  
+**"Adjusted Depth-based Isolation Forest Feature Importance for Robust Feature Ranking on Mixed-type Data"**
 
 ## Overview
-AD-DIFFI (Adjusted Depth-based Isolation Forest Feature Importance) is a feature importance method specifically designed for **mixed-type medical and biological datasets**. 
 
-Standard DIFFI often exhibits **feature-type asymmetry**, where structural differences between continuous and binary features lead to **ranking distortion**. AD-DIFFI addresses these structural discrepancies and ensures more reliable feature assessment by integrating:
+AD-DIFFI (Adjusted Depth-based Isolation Forest Feature Importance) is a feature importance framework for Isolation Forest designed for **mixed-type medical and biological datasets**. The method extends the original DIFFI framework to address feature-type asymmetry between continuous and binary variables, which can distort feature rankings and reduce interpretability in heterogeneous anomaly detection settings.
 
-- **Root-Split-Only (RSO)**: Focuses on early splits within the Isolation Forest to capture global structural information, mitigating the disproportionate influence of feature-type characteristics in deeper nodes.
-- **Z-score Normalization**: Standardizes importance scores based on a **null Data Generating Process (DGP)**. This approach corrects structural asymmetries by evaluating the deviation from expected values under null conditions, ensuring comparability across diverse feature types.
+AD-DIFFI addresses these issues through two key components:
 
-## Theoretical and Practical Validation
-The robustness of AD-DIFFI has been validated through:
-- **Quantification of Asymmetry**: Using a null DGP to formalize and quantify the structural gap between feature types, demonstrating that AD-DIFFI maintains equitable importance scores under non-informative conditions.
-- **Clinical Benchmarking**: Validated on multiple clinical datasets (e.g., Stroke, Thyroid, Hepatitis), where AD-DIFFI successfully identifies key predictors consistent with domain knowledge, even in the presence of mixed-type variables.
----
+- **Root-Split-Only (RSO):** Restricts the contribution of binary features to root splits, capturing their global separation role while reducing instability from deeper nodes.
+- **Noise-based Z-score normalization:** Standardizes raw feature scores against type-specific null noise references, improving comparability across feature types and datasets.
+
+This design improves signal-noise separation and feature-type fairness while preserving the structural interpretability of Isolation Forest.
+
+## Manuscript Information
+
+This repository is aligned with the latest manuscript version:
+
+**Adjusted Depth-based Isolation Forest Feature Importance for Robust Feature Ranking on Mixed-type Data**
+
+**Authors**
+- Yu Hidaka
+- Toru Imai
+- Katsuhiro Omae
+
+The manuscript proposes AD-DIFFI as an extension of DIFFI for anomaly detection with mixed continuous and binary features, and validates the method using simulation studies and multiple clinical benchmark datasets.
 
 ## Repository Structure
+
 ```text
 AD-DIFFI/
 ├── src/
 │   └── ad_diffi/
 │       ├── __init__.py
-│       └── core.py         # Main AD-DIFFI implementation
-├── notebooks/              # 8 primary experiment notebooks
+│       └── core.py
+├── notebooks/
 │   ├── 01_Simulation_chapter3_bias_identification.ipynb
 │   ├── 02_Simulation_chapter4_lambda_analysis.ipynb
 │   ├── 03_Simulation_chapter5_rso_zscore_validation.ipynb
@@ -38,75 +49,90 @@ AD-DIFFI/
 ```
 
 ## Installation
-This project requires Python 3.12 or later. To set up the environment, clone the repository and install the dependencies:
+
+This project requires **Python 3.12 or later**.
+
+Clone the repository from the main branch:
 
 ```bash
-git clone [https://github.com/yu-hidaka/AD-DIFFI.git](https://github.com/yu-hidaka/AD-DIFFI.git)
+git clone https://github.com/yu-hidaka/AD-DIFFI.git
 cd AD-DIFFI
 pip install -r requirements.txt
 ```
-## Usage (Google Colab / Jupyter)
 
-To reproduce the experimental results, follow these steps in your notebook environment:
+## Usage
 
-### 1. Environment Setup
-Add the following to your **first cell** to ensure the `src` module is discoverable by the Python interpreter:
+To reproduce the analyses, run the notebooks included in this repository.
+
+### Environment setup
+
+Add the following lines to the first cell of your notebook:
 
 ```python
 import sys
 import os
 
-# Set path to the root of the repository
 sys.path.append(os.getcwd())
 ```
-### 2. Running an Experiment
-You can execute any specific analysis notebook using the `%run` command. For example, to run the **Thyroid subset analysis**:
+
+### Example execution
 
 ```python
 %run notebooks/07_Real_World_Analysis_Thyroid_subset.ipynb
 ```
-### 3. Handling Kaggle Datasets
-For Stroke (05) and Breast Cancer (06) analyses, you will need a Kaggle API token (kaggle.json):
-#### 1. When prompted by the notebook, upload your kaggle.json file.
-#### 2. The code will automatically configure the Kaggle CLI and download the required data to /tmp/ad_diffi_data/.
 
-## Experiments Summary
+### Kaggle-dependent analyses
 
-This repository contains **8 primary notebooks** to reproduce the results presented in the paper. 
+For the Stroke (`05`) and Breast Cancer (`06`) notebooks, a Kaggle API token (`kaggle.json`) is required.
 
-### Theoretical Validation (Notebooks 01-03)
-- **`01_Simulation_chapter3_bias_identification.ipynb`**: Identification of **split-frequency bias** in original DIFFI where binary noise is overestimated.
-- **`02_Simulation_chapter4_lambda_analysis.ipynb`**: Impact analysis of the **$\lambda$ parameter** on feature scoring.
-- **`03_Simulation_chapter5_rso_zscore_validation.ipynb`**: Proof of bias correction using **Root-Split-Only (RSO)** and **Z-score normalization**.
+1. Upload `kaggle.json` when prompted.
+2. The notebook will automatically configure the Kaggle API and download the required dataset.
 
-### Practical Validation (Notebooks 04-08)
-- **`04_Real_World_Analysis_Annthyroid.ipynb`**: Benchmark using the **full Annthyroid dataset** (ADBench version).
-- **`05_Real_World_Analysis_Stroke.ipynb`**: Analysis of the **Kaggle Stroke dataset** with mixed-type features.
-- **`06_Real_World_Analysis_Breast_cancer.ipynb`**: Clinical validation including **survival outcome variables** (Status/Duration).
-- **`07_Real_World_Analysis_Thyroid_subset.ipynb`**: Detailed feature-level analysis on a **controlled subset (N=1000)** with real column names.
-- **`08_Real_World_Analysis_Hepatitis.ipynb`**: Validation on small-sample mixed-type data (**UCI Hepatitis**).
+## Experiments
 
----
+This repository contains 8 primary notebooks corresponding to the simulation and benchmark analyses in the manuscript.
 
-## Requirements
+### Simulation studies
 
-The following key libraries are used in this project (Full list in `requirements.txt`):
+- **01_Simulation_chapter3_bias_identification.ipynb**  
+  Evaluates feature-type asymmetry in the original DIFFI under null settings.
 
-| Library | Version | Description |
-| :--- | :--- | :--- |
-| **scikit-learn** | 1.6.1 | Base Isolation Forest implementation |
-| **pyod** | 2.0.7 | Anomaly detection benchmarks |
-| **pandas** | 2.2.2 | Data manipulation and CSV handling |
-| **numpy** | 2.0.2 | Numerical calculations |
-| **tabulate** | 0.9.0 | Markdown table formatting |
-| **kaggle** | 1.6.0 | Automated dataset acquisition |
+- **02_Simulation_chapter4_lambda_analysis.ipynb**  
+  Studies the influence of the \(\lambda\) parameter on scoring behavior.
 
----
+- **03_Simulation_chapter5_rso_zscore_validation.ipynb**  
+  Validates the combined effect of RSO constraints and noise-based Z-score normalization.
+
+### Real-data analyses
+
+- **04_Real_World_Analysis_Annthyroid.ipynb**
+- **05_Real_World_Analysis_Stroke.ipynb**
+- **06_Real_World_Analysis_Breast_cancer.ipynb**
+- **07_Real_World_Analysis_Thyroid_subset.ipynb**
+- **08_Real_World_Analysis_Hepatitis.ipynb**
+
+These notebooks reproduce the benchmark analyses described in the manuscript across multiple clinical mixed-type datasets.
+
+## Interpretation of Scores
+
+AD-DIFFI scores are standardized against type-specific null noise references.
+
+- Higher scores indicate stronger contribution relative to the null baseline.
+- Scores near the null reference indicate weak or noise-like contribution.
+- Score interpretation should follow the current implementation and manuscript definition used in this repository.
+
+## Reproducibility
+
+The repository provides the Python implementation and experimental notebooks corresponding to the manuscript analyses. The associated code repository is:
+
+[https://github.com/yu-hidaka/AD-DIFFI](https://github.com/yu-hidaka/AD-DIFFI)
+
+For consistency, the public release should use **main** as the canonical branch.
 
 ## Citation
 
-If you use this code or the **AD-DIFFI method** in your research, please cite:
+If you use this repository, please cite the manuscript:
 
-```text
-Yu Hidaka, Toru Imai, Katsuhiro Omae. "Adjusted DIFFI (AD-DIFFI): 
-Robust Feature Importance for Mixed-Type Data in Isolation Forest". (2026).
+**Yu Hidaka, Toru Imai, Katsuhiro Omae.**  
+*Adjusted Depth-based Isolation Forest Feature Importance for Robust Feature Ranking on Mixed-type Data.*  
+Preprint, 2026.
