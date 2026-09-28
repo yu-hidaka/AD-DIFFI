@@ -1,26 +1,23 @@
-"""
-AD-DIFFI: Adjusted Depth-based Isolation Forest Feature Importance
-------------------------------------------------------------------
-A robust feature importance method for Isolation Forest, specifically 
-designed to handle mixed-type data (continuous and binary) in clinical 
-informatics and anomaly detection.
+"""AD-DIFFI: adjusted feature importance for Isolation Forest."""
 
-Main features:
-- Root-Split-Only (RSO) constraint for binary features.
-- Noise-based Z-score normalization for cross-type fairness.
-"""
-
-__version__ = "0.1.0"
-__author__ = "Yu Hidaka"
-
-# Import core functions to the top-level namespace
 from .core import (
-    diffi_ib_binary_rso,
-    calculate_ad_diffi_zscore
+    FeatureTypes,
+    NoiseBaselines,
+    calculate_ad_diffi,
+    calculate_ad_diffi_zscore,
+    compute_group_cfi,
+    compute_raw_ad_diffi,
+    get_noise_baselines,
+    make_noise_baselines,
 )
 
-# Define the public API of the package
 __all__ = [
-    "diffi_ib_binary_rso",
+    "FeatureTypes",
+    "NoiseBaselines",
+    "calculate_ad_diffi",
     "calculate_ad_diffi_zscore",
+    "compute_group_cfi",
+    "compute_raw_ad_diffi",
+    "get_noise_baselines",
+    "make_noise_baselines",
 ]
