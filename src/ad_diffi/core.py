@@ -277,7 +277,6 @@ def compute_group_cfi(
         cfi_inliers / n_trees,
     )
 
-
 def compute_raw_ad_diffi(
     iforest: IsolationForest,
     X_data: np.ndarray,
@@ -293,14 +292,14 @@ def compute_raw_ad_diffi(
         anomaly_mask,
     )
 
-    raw_scores = np.where(
-        cfi_inliers > eps,
-        cfi_outliers / cfi_inliers,
+    raw_scores = np.divide(
         cfi_outliers,
+        cfi_inliers,
+        out=cfi_outliers.copy(),
+        where=cfi_inliers > eps,
     )
 
     return cfi_outliers, cfi_inliers, raw_scores
-
 
 def _resolve_max_samples(
     max_samples,
