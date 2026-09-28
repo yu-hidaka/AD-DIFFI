@@ -361,7 +361,207 @@ def compute_raw_ad_diffi(
 
     return cfi_outliers, cfi_inliers, raw_scores
 
+def _node_outlier_enrichment(
+    estimator,
+    X_data: np.ndarray,
+    anomaly_mask: np.ndarray,
+) -> np.ndarray:
+    """Return outlier-prevalence contrasts for all internal tree nodes.
 
+    For an internal node v, the enrichment is
+
+        |P(outlier | left child of v) - P(outlier | right child of v)|.
+
+    Leaf-node enrichment is zero. Node membership is evaluated using the
+    full X_data and the supplied model-defined anomaly mask.
+    """
+    X_data = np.asarray(X_data, dtype=float)
+    anomaly_mask = np.asarray(anomaly_mask, dtype=bool)
+
+    tree = estimator.tree_
+    node_indicator = estimator.decision_path(X_data)
+
+    enrichment = np.zeros(tree.node_count, dtype=float)
+
+    for node in range(tree.node_count):
+        left = tree.children_left[node]
+        right = tree.children_right[node]
+
+        if left == right:
+            continue
+
+        in_left = (
+            node_indicator[:, left]
+            .toarray()
+            .ravel()
+            .astype(bool)
+        )
+
+        in_right = (
+            node_indicator[:, right]
+            .toarray()
+            .ravel()
+            .astype(bool)
+        )
+
+        n_left = int(in_left.sum())
+        n_right = int(in_right.sum())
+
+        if n_left == 0 or n_right == 0:
+            continue
+
+        outlier_rate_left = float(
+            anomaly_mask[in_left].mean()
+        )
+
+        outlier_rate_right = float(
+            anomaly_mask[in_right].mean()
+        )
+
+        enrichment[node] = abs(
+            outlier_rate_left
+            - outlier_rate_right
+        )
+
+    return enrichment
+
+
+def _feature_enrichment_terms(
+    estimator,
+    X_data: np.ndarray,
+    feature_types: FeatureTypes,
+    anomaly_mask: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return per-sample feature contributions and path-occurrence counts.
+
+    Continuous features contribute at all eligible internal nodes. Binary
+    features contribute only if selected at the root node.
+
+    For an eligible node v on the path of observation x, the contribution is
+
+        lambda(v) * E(v) / h_t(x),
+
+    where E(v) is the node-level outlier-prevalence contrast and h_t(x) is
+    the number of internal split nodes in the path.
+    """
+    X_data = np.asarray(X_data, dtype=float)
+    anomaly_mask = np.asarray(anomaly_mask, dtype=bool)
+
+    n_samples, n_features = X_data.shape
+
+    tree = estimator.tree_
+    lambdas = _node_lambdas(tree)
+    enrichment = _node_outlier_enrichment(
+        estimator,
+        X_data,
+        anomaly_mask,
+    )
+
+    paths = _paths_for_rows(
+        estimator,
+        X_data,
+    )
+
+    numerator = np.zeros(
+        (n_samples, n_features),
+        dtype=float,
+    )
+
+    denominator = np.zeros(
+        (n_samples, n_features),
+        dtype=float,
+    )
+
+    for row, path in enumerate(paths):
+        internal_path = [
+            node
+            for node in path
+            if tree.feature[node] >= 0
+        ]
+
+        path_length = max(
+            len(internal_path),
+            1,
+        )
+
+        for node in internal_path:
+            feature = int(tree.feature[node])
+            feature_type = feature_types[feature]
+
+            is_eligible = (
+                feature_type == "cont"
+                or (
+                    feature_type == "bin"
+                    and node == 0
+                )
+            )
+
+            if not is_eligible:
+                continue
+
+            numerator[row, feature] += (
+                lambdas[node]
+                * enrichment[node]
+                / path_length
+            )
+
+            denominator[row, feature] += 1.0
+
+    return numerator, denominator
+
+
+def compute_enrichment_ad_diffi(
+    iforest: IsolationForest,
+    X_data: np.ndarray,
+    feature_types: FeatureTypes,
+    anomaly_mask: np.ndarray,
+) -> np.ndarray:
+    """Compute enrichment-based raw AD-DIFFI feature importance.
+
+    The score is the forest mean of tree-specific feature contributions. Each
+    tree-specific contribution is the mean lambda(v) * E(v) / h_t(x) over
+    feature-specific path occurrences.
+
+    Continuous features are eligible at all internal split nodes. Binary
+    features are eligible only when selected at the root split.
+    """
+    X_data = np.asarray(X_data, dtype=float)
+    anomaly_mask = np.asarray(anomaly_mask, dtype=bool)
+
+    _validate_inputs(
+        iforest,
+        X_data,
+        feature_types,
+        anomaly_mask,
+    )
+
+    n_features = X_data.shape[1]
+
+    importance = np.zeros(
+        n_features,
+        dtype=float,
+    )
+
+    for estimator in iforest.estimators_:
+        numerator, denominator = _feature_enrichment_terms(
+            estimator,
+            X_data,
+            feature_types,
+            anomaly_mask,
+        )
+
+        numerator_total = numerator.sum(axis=0)
+        denominator_total = denominator.sum(axis=0)
+
+        importance += np.divide(
+            numerator_total,
+            denominator_total,
+            out=np.zeros_like(numerator_total),
+            where=denominator_total > 0,
+        )
+
+    return importance / len(iforest.estimators_)
+    
 def _resolve_max_samples(
     max_samples,
     n_samples: int,
