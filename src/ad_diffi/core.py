@@ -147,31 +147,86 @@ def _paths_for_rows(
     return paths
 
 
+def _root_outlier_enrichment(
+    estimator,
+    X_data: np.ndarray,
+    anomaly_mask: np.ndarray,
+) -> float:
+    """Calculate absolute outlier-prevalence difference across root children.
+
+    The enrichment is
+
+        | P(outlier | root-left) - P(outlier | root-right) |.
+
+    It is zero if the root is a leaf or either root child receives no
+    observations from X_data.
+    """
+    tree = estimator.tree_
+
+    root = 0
+    left = tree.children_left[root]
+    right = tree.children_right[root]
+
+    if left == right:
+        return 0.0
+
+    node_indicator = estimator.decision_path(X_data)
+
+    in_left = node_indicator[:, left].toarray().ravel().astype(bool)
+    in_right = node_indicator[:, right].toarray().ravel().astype(bool)
+
+    n_left = int(in_left.sum())
+    n_right = int(in_right.sum())
+
+    if n_left == 0 or n_right == 0:
+        return 0.0
+
+    outlier_rate_left = float(anomaly_mask[in_left].mean())
+    outlier_rate_right = float(anomaly_mask[in_right].mean())
+
+    return abs(outlier_rate_left - outlier_rate_right)
+
+
 def _feature_path_terms(
     estimator,
     X_data: np.ndarray,
     feature_types: FeatureTypes,
+    anomaly_mask: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Return feature-specific numerator and denominator terms.
 
-    For an observation x and tree t, an eligible split node v contributes
+    For an observation x and tree t, a continuous feature selected at internal
+    node v contributes
 
-        lambda(v) / h_t(x)
+        lambda(v) / h_t(x),
 
     where h_t(x) is the number of internal split nodes on the root-to-leaf
-    path. The denominator is the number of feature-specific path occurrences.
+    path.
 
-    Continuous features contribute at all internal nodes where they are
-    selected. Binary features contribute only at the root node under the
-    Root-Split-Only constraint.
+    Binary features are evaluated only at the root split under the
+    Root-Split-Only constraint. If the root split feature is binary, its
+    contribution is further multiplied by the root outlier-enrichment factor
+
+        E_t = |P(outlier | root-left) - P(outlier | root-right)|.
+
+    Thus, a binary root split receives large attribution only when it both
+    creates an imbalanced partition and separates model-defined outliers from
+    inliers across its two root children.
     """
     X_data = np.asarray(X_data, dtype=float)
+    anomaly_mask = np.asarray(anomaly_mask, dtype=bool)
 
     n_samples, n_features = X_data.shape
 
     tree = estimator.tree_
     lambdas = _node_lambdas(tree)
     paths = _paths_for_rows(estimator, X_data)
+
+    root_enrichment = _root_outlier_enrichment(
+        estimator,
+        X_data,
+        anomaly_mask,
+    )
 
     numerator = np.zeros(
         (n_samples, n_features),
@@ -196,21 +251,22 @@ def _feature_path_terms(
             feature = int(tree.feature[node])
             feature_type = feature_types[feature]
 
-            is_eligible = (
-                feature_type == "cont"
-                or (
-                    feature_type == "bin"
-                    and node == 0
+            if feature_type == "cont":
+                contribution = (
+                    lambdas[node] / path_length
                 )
-            )
 
-            if not is_eligible:
+            elif feature_type == "bin" and node == 0:
+                contribution = (
+                    lambdas[node]
+                    * root_enrichment
+                    / path_length
+                )
+
+            else:
                 continue
 
-            numerator[row, feature] += (
-                lambdas[node] / path_length
-            )
-
+            numerator[row, feature] += contribution
             denominator[row, feature] += 1.0
 
     return numerator, denominator
@@ -224,9 +280,11 @@ def compute_group_cfi(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute forest-averaged outlier and inlier CFIs.
 
-    For each tree and group, the CFI is the sum of lambda(v)/h_t(x)
-    contributions divided by the corresponding feature-specific path-occurrence
-    count. The result is then averaged across trees.
+    For each tree and group, the CFI is the sum of feature-specific,
+    inverse-path-length-weighted contributions divided by the corresponding
+    feature-specific path-occurrence count. Continuous nodes use lambda(v),
+    whereas binary root nodes use lambda(root) times root outlier enrichment.
+    Tree-specific CFIs are averaged over all trees.
     """
     X_data = np.asarray(X_data, dtype=float)
     anomaly_mask = np.asarray(anomaly_mask, dtype=bool)
@@ -248,6 +306,7 @@ def compute_group_cfi(
             estimator,
             X_data,
             feature_types,
+            anomaly_mask,
         )
 
         numerator_outliers = numerator[anomaly_mask].sum(axis=0)
@@ -277,6 +336,7 @@ def compute_group_cfi(
         cfi_inliers / n_trees,
     )
 
+
 def compute_raw_ad_diffi(
     iforest: IsolationForest,
     X_data: np.ndarray,
@@ -300,6 +360,7 @@ def compute_raw_ad_diffi(
     )
 
     return cfi_outliers, cfi_inliers, raw_scores
+
 
 def _resolve_max_samples(
     max_samples,
@@ -489,22 +550,7 @@ def make_noise_baselines(
     bin_mean: float,
     bin_sd: float,
 ) -> NoiseBaselines:
-    """Create validated type-specific noise-baseline dictionary.
-
-    Parameters
-    ----------
-    cont_mean, cont_sd:
-        Mean and SD of raw AD-DIFFI scores under continuous-feature noise.
-
-    bin_mean, bin_sd:
-        Mean and SD of raw AD-DIFFI scores under binary-feature noise.
-
-    Returns
-    -------
-    NoiseBaselines
-        Dictionary with entries for ``"cont"`` and ``"bin"``, each containing
-        ``"mean"`` and ``"sd"``.
-    """
+    """Create validated type-specific noise-baseline dictionary."""
     baselines: NoiseBaselines = {
         "cont": {
             "mean": float(cont_mean),
@@ -569,31 +615,7 @@ def calculate_ad_diffi_zscore(
     feature_types: FeatureTypes,
     noise_baselines: NoiseBaselines,
 ) -> np.ndarray:
-    """Standardize raw AD-DIFFI scores using precomputed noise baselines.
-
-    This function is intended for repeated analyses, such as simulation
-    studies, where the same scenario-specific null reference distribution is
-    applied to many observed datasets.
-
-    Parameters
-    ----------
-    raw_scores:
-        One raw AD-DIFFI score per feature.
-
-    feature_types:
-        Mapping from each feature index to ``"cont"`` or ``"bin"``.
-
-    noise_baselines:
-        Type-specific baseline dictionary. It must contain:
-
-        ``{"cont": {"mean": ..., "sd": ...},
-          "bin": {"mean": ..., "sd": ...}}``.
-
-    Returns
-    -------
-    np.ndarray
-        Type-specific Z-standardized AD-DIFFI scores.
-    """
+    """Standardize raw AD-DIFFI scores using precomputed noise baselines."""
     raw_scores = np.asarray(raw_scores, dtype=float)
 
     if raw_scores.ndim != 1:
@@ -660,7 +682,6 @@ def calculate_ad_diffi(
     For repeated analyses on the same scenario, use
     ``compute_raw_ad_diffi()``, ``get_noise_baselines()``,
     ``make_noise_baselines()``, and ``calculate_ad_diffi_zscore()`` instead.
-    This avoids repeatedly estimating an identical noise baseline.
     """
     X_data = np.asarray(X_data, dtype=float)
     anomaly_mask = np.asarray(anomaly_mask, dtype=bool)
