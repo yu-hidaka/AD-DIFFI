@@ -1,10 +1,11 @@
-"""AD-DIFFI: adjusted feature importance for Isolation Forest."""
+"""AD-DIFFI: enrichment-aware feature importance for Isolation Forest."""
 
 from .core import (
     FeatureTypes,
     NoiseBaselines,
     calculate_ad_diffi,
     calculate_ad_diffi_zscore,
+    calculate_enrichment_ad_diffi,
     compute_enrichment_ad_diffi,
     compute_group_cfi,
     compute_raw_ad_diffi,
@@ -18,6 +19,7 @@ __all__ = [
     "NoiseBaselines",
     "calculate_ad_diffi",
     "calculate_ad_diffi_zscore",
+    "calculate_enrichment_ad_diffi",
     "compute_enrichment_ad_diffi",
     "compute_group_cfi",
     "compute_raw_ad_diffi",
