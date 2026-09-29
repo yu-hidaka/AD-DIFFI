@@ -561,6 +561,171 @@ def compute_enrichment_ad_diffi(
         )
 
     return importance / len(iforest.estimators_)
+
+def get_enrichment_noise_baselines(
+    X_dim: int,
+    feature_types: FeatureTypes,
+    if_params: dict,
+    n_iter: int = 20,
+    random_state: Optional[int] = 12345,
+    n_noise: int = 256,
+) -> Tuple[float, float, float, float]:
+    """Estimate type-specific null means and SDs for enrichment AD-DIFFI.
+
+    Synthetic noise datasets are generated with independent feature-type-
+    specific distributions:
+
+    - continuous features: Uniform(0, 1)
+    - binary features: Bernoulli(0.5)
+
+    For each replication, an Isolation Forest is fitted using ``if_params``.
+    Model-defined outliers are obtained using ``predict(X_noise) == -1``.
+    Enrichment-based raw feature scores are then computed using
+    ``compute_enrichment_ad_diffi``.
+
+    Returns
+    -------
+    tuple[float, float, float, float]
+        ``(cont_mean, cont_sd, bin_mean, bin_sd)``.
+    """
+    if n_iter < 2:
+        raise ValueError("n_iter must be at least 2.")
+
+    if n_noise < 2:
+        raise ValueError("n_noise must be at least 2.")
+
+    expected_indices = set(range(X_dim))
+
+    if set(feature_types) != expected_indices:
+        raise ValueError(
+            "feature_types must contain exactly indices "
+            f"0 through {X_dim - 1}."
+        )
+
+    invalid_types = {
+        feature: feature_types[feature]
+        for feature in range(X_dim)
+        if feature_types[feature] not in {"cont", "bin"}
+    }
+
+    if invalid_types:
+        raise ValueError(
+            "Feature types must be 'cont' or 'bin': "
+            f"{invalid_types}"
+        )
+
+    rng = np.random.default_rng(random_state)
+
+    continuous_indices = [
+        feature
+        for feature in range(X_dim)
+        if feature_types[feature] == "cont"
+    ]
+
+    binary_indices = [
+        feature
+        for feature in range(X_dim)
+        if feature_types[feature] == "bin"
+    ]
+
+    continuous_scores: list[float] = []
+    binary_scores: list[float] = []
+
+    for iteration in range(n_iter):
+        X_noise = _generate_noise(
+            n_samples=n_noise,
+            n_features=X_dim,
+            feature_types=feature_types,
+            rng=rng,
+        )
+
+        params = dict(if_params)
+        params.pop("random_state", None)
+
+        params["max_samples"] = _resolve_max_samples(
+            params.get("max_samples", "auto"),
+            n_noise,
+        )
+
+        noise_model = IsolationForest(
+            **params,
+            random_state=(
+                None
+                if random_state is None
+                else random_state + iteration
+            ),
+        ).fit(X_noise)
+
+        noise_mask = noise_model.predict(X_noise) == -1
+
+        if noise_mask.all() or (~noise_mask).all():
+            order = np.argsort(
+                noise_model.score_samples(X_noise)
+            )
+
+            noise_mask = np.zeros(
+                n_noise,
+                dtype=bool,
+            )
+
+            n_outliers = max(
+                1,
+                int(
+                    np.ceil(
+                        params.get("contamination", 0.1)
+                        * n_noise
+                    )
+                ),
+            )
+
+            noise_mask[order[:n_outliers]] = True
+
+        enrichment_scores = compute_enrichment_ad_diffi(
+            iforest=noise_model,
+            X_data=X_noise,
+            feature_types=feature_types,
+            anomaly_mask=noise_mask,
+        )
+
+        if continuous_indices:
+            continuous_scores.extend(
+                enrichment_scores[
+                    continuous_indices
+                ].tolist()
+            )
+
+        if binary_indices:
+            binary_scores.extend(
+                enrichment_scores[
+                    binary_indices
+                ].tolist()
+            )
+
+    def summarize(
+        values: list[float],
+    ) -> Tuple[float, float]:
+        if not values:
+            return 0.0, 1.0
+
+        values_array = np.asarray(
+            values,
+            dtype=float,
+        )
+
+        mean = float(values_array.mean())
+        sd = float(values_array.std(ddof=1))
+
+        return mean, sd if sd > 0 else 1.0
+
+    cont_mean, cont_sd = summarize(
+        continuous_scores
+    )
+
+    bin_mean, bin_sd = summarize(
+        binary_scores
+    )
+
+    return cont_mean, cont_sd, bin_mean, bin_sd
     
 def _resolve_max_samples(
     max_samples,
