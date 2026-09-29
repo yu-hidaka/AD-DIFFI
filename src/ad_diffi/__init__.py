@@ -5,8 +5,10 @@ from .core import (
     NoiseBaselines,
     calculate_ad_diffi,
     calculate_ad_diffi_zscore,
+    compute_enrichment_ad_diffi,
     compute_group_cfi,
     compute_raw_ad_diffi,
+    get_enrichment_noise_baselines,
     get_noise_baselines,
     make_noise_baselines,
 )
@@ -16,8 +18,10 @@ __all__ = [
     "NoiseBaselines",
     "calculate_ad_diffi",
     "calculate_ad_diffi_zscore",
+    "compute_enrichment_ad_diffi",
     "compute_group_cfi",
     "compute_raw_ad_diffi",
+    "get_enrichment_noise_baselines",
     "get_noise_baselines",
     "make_noise_baselines",
 ]
