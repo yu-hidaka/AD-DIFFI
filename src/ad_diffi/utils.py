@@ -1,13 +1,14 @@
 """
-Data loading, validation, preprocessing, synthetic data generation,
-and output utilities for AD-DIFFI.
+Data loading, validation, preprocessing, and output utilities for AD-DIFFI.
+
+This module supports real-world benchmark datasets and raw UCI thyroid data.
 
 This module does not:
+- generate synthetic fallback datasets;
 - fit Isolation Forests;
 - calculate DIFFI or AD-DIFFI scores;
 - fit downstream models.
 
-Synthetic data generation is explicit and separate from real-data download.
 Training-dependent preprocessing is implemented through fit/transform helpers.
 """
 
@@ -15,7 +16,6 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -35,17 +35,6 @@ DEFAULT_DATA_DIR = Path(
 )
 
 DEFAULT_DATASET_URLS = {
-    "annthyroid": [
-        (
-            "https://raw.githubusercontent.com/Minqi824/"
-            "ADBench/main/data/annthyroid.csv"
-        ),
-        (
-            "https://raw.githubusercontent.com/Minqi824/"
-            "ADBench/main/datasets/Classical/"
-            "21_annthyroid.csv"
-        ),
-    ],
     "stroke": [
         (
             "https://raw.githubusercontent.com/Minqi824/"
@@ -81,147 +70,83 @@ DEFAULT_DATASET_URLS = {
     ],
 }
 
-
-# ============================================================
-# Synthetic mixed-type dataset
-# ============================================================
-
-SYNTHETIC_DATASET_NAME = (
-    "synthetic_thyroid_like"
-)
-
-SYNTHETIC_LABEL_COLUMN = (
-    "Outlier_label"
-)
-
-SYNTHETIC_FEATURE_NAMES = [
-    "X1_Cont_Signal_Strong",
-    "X2_Cont_Signal_Moderate",
-    "X3_Cont_Signal_Weak",
-    "X4_Cont_Noise_1",
-    "X5_Cont_Noise_2",
-    "X6_Cont_Noise_3",
-    "X7_Bin_Signal_Strong",
-    "X8_Bin_Signal_Weak",
-] + [
-    f"X{i}_Bin_Noise"
-    for i in range(9, 28)
+RAW_THYROID_DATA_URLS = [
+    (
+        "https://rioultf.users.greyc.fr/"
+        "uci/files/thyroid-disease/"
+        "thyroid0387.data"
+    ),
 ]
 
-SYNTHETIC_FEATURE_TYPES: Dict[int, str] = {
-    index: (
-        "cont"
-        if index < 6
-        else "bin"
-    )
-    for index in range(27)
-}
 
-SYNTHETIC_SIGNAL_MASK = np.array(
-    [
-        True,
-        True,
-        True,
-        False,
-        False,
-        False,
-        True,
-        True,
-    ]
-    + [False] * 19,
-    dtype=bool,
+# ============================================================
+# Raw UCI Thyroid schema
+# ============================================================
+
+RAW_THYROID_LABEL_COLUMN = (
+    "thyroid_class"
 )
 
-SYNTHETIC_SIGNAL_INDICES = np.flatnonzero(
-    SYNTHETIC_SIGNAL_MASK
-)
+RAW_THYROID_FEATURE_NAMES = [
+    "age",
+    "sex",
+    "on_thyroxine",
+    "query_on_thyroxine",
+    "on_antithyroid_medication",
+    "sick",
+    "pregnant",
+    "thyroid_surgery",
+    "I131_treatment",
+    "query_hypothyroid",
+    "query_hyperthyroid",
+    "lithium",
+    "goitre",
+    "tumor",
+    "hypopituitary",
+    "psych",
+    "TSH",
+    "T3",
+    "TT4",
+    "T4U",
+    "FTI",
+    "referral_source",
+]
 
-SYNTHETIC_NOISE_INDICES = np.flatnonzero(
-    ~SYNTHETIC_SIGNAL_MASK
-)
+RAW_THYROID_BINARY_COLUMNS = [
+    "sex",
+    "on_thyroxine",
+    "query_on_thyroxine",
+    "on_antithyroid_medication",
+    "sick",
+    "pregnant",
+    "thyroid_surgery",
+    "I131_treatment",
+    "query_hypothyroid",
+    "query_hyperthyroid",
+    "lithium",
+    "goitre",
+    "tumor",
+    "hypopituitary",
+    "psych",
+]
 
-SYNTHETIC_CONTINUOUS_INDICES = np.arange(
-    0,
-    6,
-    dtype=int,
-)
+RAW_THYROID_CONTINUOUS_COLUMNS = [
+    "age",
+    "TSH",
+    "T3",
+    "TT4",
+    "T4U",
+    "FTI",
+]
 
-SYNTHETIC_BINARY_INDICES = np.arange(
-    6,
-    27,
-    dtype=int,
-)
+RAW_THYROID_CATEGORICAL_COLUMNS = [
+    "referral_source",
+]
 
 
-@dataclass(frozen=True)
-class SyntheticDatasetConfig:
-    """
-    Configuration for the 27-feature synthetic mixed-type dataset.
-
-    Feature structure
-    -----------------
-    X1--X3:
-        Continuous signal features.
-
-    X4--X6:
-        Continuous noise features.
-
-    X7--X8:
-        Binary signal features.
-
-    X9--X27:
-        Binary noise features.
-    """
-
-    n_samples: int = 7200
-    contamination: float = 0.0742
-    seed: int = 42
-
-    normal_cont_mean: float = 0.0
-    normal_cont_sd: float = 1.0
-
-    cont_shift_strong: float = 5.0
-    cont_shift_moderate: float = 3.0
-    cont_shift_weak: float = 2.0
-
-    normal_binary_probability: float = 0.05
-    binary_probability_strong: float = 0.80
-    binary_probability_weak: float = 0.50
-
-    noise_binary_probability: float = 0.05
-
-    def __post_init__(self) -> None:
-        if self.n_samples < 2:
-            raise ValueError(
-                "n_samples must be at least 2."
-            )
-
-        if not (
-            0.0 < self.contamination < 1.0
-        ):
-            raise ValueError(
-                "contamination must be in (0, 1)."
-            )
-
-        if self.normal_cont_sd <= 0:
-            raise ValueError(
-                "normal_cont_sd must be positive."
-            )
-
-        probabilities = [
-            self.normal_binary_probability,
-            self.binary_probability_strong,
-            self.binary_probability_weak,
-            self.noise_binary_probability,
-        ]
-
-        if any(
-            not 0.0 <= probability <= 1.0
-            for probability in probabilities
-        ):
-            raise ValueError(
-                "Binary probabilities must be in [0, 1]."
-            )
+# ============================================================
+# General validation
+# ============================================================
 
 
 def validate_feature_metadata(
@@ -233,7 +158,7 @@ def validate_feature_metadata(
     """
     feature_names = list(feature_names)
 
-    if len(feature_names) == 0:
+    if not feature_names:
         raise ValueError(
             "feature_names must not be empty."
         )
@@ -280,488 +205,6 @@ def validate_feature_metadata(
             "Feature types must be 'cont' or 'bin': "
             f"{invalid_types}"
         )
-
-
-def generate_synthetic_thyroid_like(
-    config: SyntheticDatasetConfig | None = None,
-) -> Tuple[
-    pd.DataFrame,
-    np.ndarray,
-    List[str],
-    Dict[int, str],
-]:
-    """
-    Generate a reproducible 27-feature mixed-type dataset.
-
-    The returned dataframe includes the label column
-    ``Outlier_label``. The returned y array contains 0/1 labels.
-
-    This is synthetic data. It must not be described as a real clinical
-    Annthyroid cohort or as a downloaded ADBench dataset.
-    """
-    if config is None:
-        config = SyntheticDatasetConfig()
-
-    rng = np.random.default_rng(
-        config.seed
-    )
-
-    n_anomaly = int(
-        round(
-            config.n_samples
-            * config.contamination
-        )
-    )
-
-    n_anomaly = max(
-        1,
-        min(
-            config.n_samples - 1,
-            n_anomaly,
-        ),
-    )
-
-    anomaly_indices = rng.choice(
-        config.n_samples,
-        size=n_anomaly,
-        replace=False,
-    )
-
-    y = np.zeros(
-        config.n_samples,
-        dtype=int,
-    )
-
-    y[anomaly_indices] = 1
-
-    X = np.empty(
-        (
-            config.n_samples,
-            len(SYNTHETIC_FEATURE_NAMES),
-        ),
-        dtype=float,
-    )
-
-    # --------------------------------------------------------
-    # Continuous features
-    # --------------------------------------------------------
-
-    # X1--X6: continuous features.
-    X[:, 0:6] = rng.normal(
-        loc=config.normal_cont_mean,
-        scale=config.normal_cont_sd,
-        size=(
-            config.n_samples,
-            6,
-        ),
-    )
-
-    # Continuous signal features.
-    X[anomaly_indices, 0] += (
-        config.cont_shift_strong
-    )
-
-    X[anomaly_indices, 1] += (
-        config.cont_shift_moderate
-    )
-
-    X[anomaly_indices, 2] += (
-        config.cont_shift_weak
-    )
-
-    # X4--X6 remain continuous noise.
-
-    # --------------------------------------------------------
-    # Binary features
-    # --------------------------------------------------------
-
-    # X9--X27: binary noise features.
-    X[:, 8:27] = rng.binomial(
-        n=1,
-        p=config.noise_binary_probability,
-        size=(
-            config.n_samples,
-            19,
-        ),
-    )
-
-    # X7--X8: binary signal features.
-    X[:, 6] = rng.binomial(
-        n=1,
-        p=config.normal_binary_probability,
-        size=config.n_samples,
-    )
-
-    X[:, 7] = rng.binomial(
-        n=1,
-        p=config.normal_binary_probability,
-        size=config.n_samples,
-    )
-
-    X[anomaly_indices, 6] = rng.binomial(
-        n=1,
-        p=config.binary_probability_strong,
-        size=n_anomaly,
-    )
-
-    X[anomaly_indices, 7] = rng.binomial(
-        n=1,
-        p=config.binary_probability_weak,
-        size=n_anomaly,
-    )
-
-    # Shuffle observations so that anomalies are not ordered.
-    permutation = rng.permutation(
-        config.n_samples
-    )
-
-    X = X[
-        permutation
-    ]
-
-    y = y[
-        permutation
-    ]
-
-    df = pd.DataFrame(
-        X,
-        columns=SYNTHETIC_FEATURE_NAMES,
-    )
-
-    df[SYNTHETIC_LABEL_COLUMN] = np.where(
-        y == 1,
-        "o",
-        "normal",
-    )
-
-    validate_feature_metadata(
-        feature_names=SYNTHETIC_FEATURE_NAMES,
-        feature_types=SYNTHETIC_FEATURE_TYPES,
-    )
-
-    return (
-        df,
-        y,
-        SYNTHETIC_FEATURE_NAMES.copy(),
-        SYNTHETIC_FEATURE_TYPES.copy(),
-    )
-
-
-def save_synthetic_thyroid_like(
-    output_path: str | Path,
-    config: SyntheticDatasetConfig | None = None,
-) -> Dict[str, Any]:
-    """
-    Generate and save the reproducible synthetic dataset.
-    """
-    if config is None:
-        config = SyntheticDatasetConfig()
-
-    output_path = Path(
-        output_path
-    )
-
-    output_path.parent.mkdir(
-        exist_ok=True,
-        parents=True,
-    )
-
-    df, y, feature_names, feature_types = (
-        generate_synthetic_thyroid_like(
-            config=config
-        )
-    )
-
-    df.to_csv(
-        output_path,
-        index=False,
-    )
-
-    return {
-        "dataset_name": (
-            SYNTHETIC_DATASET_NAME
-        ),
-        "path": str(output_path),
-        "n_samples": int(len(df)),
-        "n_features": int(
-            len(feature_names)
-        ),
-        "n_continuous": int(
-            sum(
-                value == "cont"
-                for value in feature_types.values()
-            )
-        ),
-        "n_binary": int(
-            sum(
-                value == "bin"
-                for value in feature_types.values()
-            )
-        ),
-        "n_anomaly": int(y.sum()),
-        "contamination": float(y.mean()),
-        "seed": int(config.seed),
-        "feature_names": feature_names,
-        "feature_types": {
-            str(index): feature_type
-            for index, feature_type
-            in feature_types.items()
-        },
-    }
-
-
-def load_synthetic_thyroid_like(
-    input_path: str | Path,
-) -> Tuple[
-    pd.DataFrame,
-    np.ndarray,
-    List[str],
-    Dict[int, str],
-]:
-    """
-    Load a previously saved synthetic mixed-type dataset.
-    """
-    input_path = Path(
-        input_path
-    )
-
-    if not input_path.exists():
-        raise FileNotFoundError(
-            f"Dataset not found: {input_path}"
-        )
-
-    df = pd.read_csv(
-        input_path
-    )
-
-    expected_columns = (
-        SYNTHETIC_FEATURE_NAMES
-        + [SYNTHETIC_LABEL_COLUMN]
-    )
-
-    missing_columns = [
-        column
-        for column in expected_columns
-        if column not in df.columns
-    ]
-
-    if missing_columns:
-        raise ValueError(
-            "Dataset is missing columns: "
-            f"{missing_columns}"
-        )
-
-    df = df[
-        expected_columns
-    ].copy()
-
-    X = df[
-        SYNTHETIC_FEATURE_NAMES
-    ].copy()
-
-    for column in SYNTHETIC_FEATURE_NAMES:
-        X[column] = pd.to_numeric(
-            X[column],
-            errors="coerce",
-        )
-
-    if X.isna().any().any():
-        raise ValueError(
-            "Synthetic dataset contains invalid "
-            "feature values."
-        )
-
-    labels = (
-        df[SYNTHETIC_LABEL_COLUMN]
-        .astype(str)
-        .str.strip()
-        .str.lower()
-    )
-
-    invalid_labels = set(labels) - {
-        "normal",
-        "o",
-    }
-
-    if invalid_labels:
-        raise ValueError(
-            "Unexpected synthetic label values: "
-            f"{sorted(invalid_labels)}"
-        )
-
-    y = labels.eq(
-        "o"
-    ).astype(int).to_numpy()
-
-    return (
-        X,
-        y,
-        SYNTHETIC_FEATURE_NAMES.copy(),
-        SYNTHETIC_FEATURE_TYPES.copy(),
-    )
-
-
-# ============================================================
-# Dataset loading
-# ============================================================
-
-
-def _validate_csv_file(
-    csv_path: Path,
-) -> None:
-    """
-    Confirm that a downloaded file can be read as a non-empty CSV.
-    """
-    if not csv_path.exists():
-        raise FileNotFoundError(
-            f"Dataset file does not exist: {csv_path}"
-        )
-
-    if csv_path.stat().st_size == 0:
-        raise ValueError(
-            f"Dataset file is empty: {csv_path}"
-        )
-
-    sample = pd.read_csv(
-        csv_path,
-        nrows=5,
-    )
-
-    if sample.shape[1] == 0:
-        raise ValueError(
-            f"Dataset has no columns: {csv_path}"
-        )
-
-
-def download_dataset(
-    dataset_name: str,
-    data_dir: str | Path = DEFAULT_DATA_DIR,
-    urls: Optional[Sequence[str]] = None,
-    overwrite: bool = False,
-) -> str:
-    """
-    Download a real benchmark dataset.
-
-    No synthetic fallback is used. If all download attempts fail, an exception
-    is raised.
-    """
-    dataset_name = dataset_name.lower()
-    data_dir = Path(
-        data_dir
-    )
-
-    data_dir.mkdir(
-        exist_ok=True,
-        parents=True,
-    )
-
-    csv_path = (
-        data_dir
-        / f"{dataset_name}.csv"
-    )
-
-    if csv_path.exists() and not overwrite:
-        _validate_csv_file(
-            csv_path
-        )
-
-        return str(csv_path)
-
-    if urls is None:
-        if dataset_name not in (
-            DEFAULT_DATASET_URLS
-        ):
-            raise ValueError(
-                "No default URLs registered "
-                f"for {dataset_name!r}."
-            )
-
-        urls = DEFAULT_DATASET_URLS[
-            dataset_name
-        ]
-
-    errors = []
-
-    for url in urls:
-        try:
-            if csv_path.exists():
-                csv_path.unlink()
-
-            urllib.request.urlretrieve(
-                url,
-                str(csv_path),
-            )
-
-            _validate_csv_file(
-                csv_path
-            )
-
-            return str(csv_path)
-
-        except Exception as exc:
-            errors.append(
-                f"{url}: {exc}"
-            )
-
-            if csv_path.exists():
-                csv_path.unlink()
-
-    error_message = "\n".join(
-        errors
-    )
-
-    raise RuntimeError(
-        f"Could not download real dataset "
-        f"{dataset_name!r}. "
-        "Synthetic generation is separate and "
-        "must be called explicitly.\n"
-        f"{error_message}"
-    )
-
-
-def download_adbench_dataset(
-    dataset_name: str,
-    data_dir: str | Path = DEFAULT_DATA_DIR,
-) -> str:
-    """
-    Backward-compatible wrapper for download_dataset.
-    """
-    return download_dataset(
-        dataset_name=dataset_name,
-        data_dir=data_dir,
-    )
-
-
-def load_csv_dataset(
-    csv_path: str | Path,
-) -> pd.DataFrame:
-    """
-    Load a CSV file into a DataFrame.
-    """
-    csv_path = Path(
-        csv_path
-    )
-
-    if not csv_path.exists():
-        raise FileNotFoundError(
-            f"CSV file not found: {csv_path}"
-        )
-
-    df = pd.read_csv(
-        csv_path
-    )
-
-    if df.empty:
-        raise ValueError(
-            f"CSV file contains no rows: {csv_path}"
-        )
-
-    return df
-
-
-# ============================================================
-# Dataset validation
-# ============================================================
 
 
 def validate_required_columns(
@@ -856,6 +299,334 @@ def dataset_summary(
         )
 
     return summary
+
+
+# ============================================================
+# Download and CSV utilities
+# ============================================================
+
+
+def _validate_csv_file(
+    csv_path: Path,
+) -> None:
+    """
+    Confirm that a downloaded file can be read as a non-empty CSV.
+    """
+    if not csv_path.exists():
+        raise FileNotFoundError(
+            f"Dataset file does not exist: {csv_path}"
+        )
+
+    if csv_path.stat().st_size == 0:
+        raise ValueError(
+            f"Dataset file is empty: {csv_path}"
+        )
+
+    sample = pd.read_csv(
+        csv_path,
+        nrows=5,
+    )
+
+    if sample.shape[1] == 0:
+        raise ValueError(
+            f"Dataset has no columns: {csv_path}"
+        )
+
+
+def download_dataset(
+    dataset_name: str,
+    data_dir: str | Path = DEFAULT_DATA_DIR,
+    urls: Optional[Sequence[str]] = None,
+    overwrite: bool = False,
+) -> str:
+    """
+    Download a real benchmark dataset.
+
+    No synthetic fallback is used.
+    """
+    dataset_name = dataset_name.lower()
+    data_dir = Path(
+        data_dir
+    )
+
+    data_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    csv_path = (
+        data_dir
+        / f"{dataset_name}.csv"
+    )
+
+    if (
+        csv_path.exists()
+        and not overwrite
+    ):
+        _validate_csv_file(
+            csv_path
+        )
+
+        return str(csv_path)
+
+    if urls is None:
+        if dataset_name not in (
+            DEFAULT_DATASET_URLS
+        ):
+            raise ValueError(
+                "No default URLs registered "
+                f"for {dataset_name!r}."
+            )
+
+        urls = DEFAULT_DATASET_URLS[
+            dataset_name
+        ]
+
+    errors = []
+
+    for url in urls:
+        try:
+            if csv_path.exists():
+                csv_path.unlink()
+
+            urllib.request.urlretrieve(
+                url,
+                str(csv_path),
+            )
+
+            _validate_csv_file(
+                csv_path
+            )
+
+            return str(csv_path)
+
+        except Exception as exc:
+            errors.append(
+                f"{url}: {exc}"
+            )
+
+            if csv_path.exists():
+                csv_path.unlink()
+
+    raise RuntimeError(
+        f"Could not download dataset "
+        f"{dataset_name!r}.\n"
+        + "\n".join(errors)
+    )
+
+
+def download_adbench_dataset(
+    dataset_name: str,
+    data_dir: str | Path = DEFAULT_DATA_DIR,
+) -> str:
+    """
+    Backward-compatible wrapper for download_dataset.
+    """
+    return download_dataset(
+        dataset_name=dataset_name,
+        data_dir=data_dir,
+    )
+
+
+def load_csv_dataset(
+    csv_path: str | Path,
+) -> pd.DataFrame:
+    """
+    Load a CSV file into a DataFrame.
+    """
+    csv_path = Path(
+        csv_path
+    )
+
+    if not csv_path.exists():
+        raise FileNotFoundError(
+            f"CSV file not found: {csv_path}"
+        )
+
+    df = pd.read_csv(
+        csv_path
+    )
+
+    if df.empty:
+        raise ValueError(
+            f"CSV file contains no rows: {csv_path}"
+        )
+
+    return df
+
+
+# ============================================================
+# Raw UCI Thyroid loading
+# ============================================================
+
+
+def download_raw_thyroid_dataset(
+    data_dir: str | Path = DEFAULT_DATA_DIR,
+    urls: Optional[Sequence[str]] = None,
+    overwrite: bool = False,
+) -> str:
+    """
+    Download the raw UCI thyroid0387.data file.
+    """
+    data_dir = Path(
+        data_dir
+    )
+
+    data_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    output_path = (
+        data_dir
+        / "thyroid0387.data"
+    )
+
+    if (
+        output_path.exists()
+        and not overwrite
+    ):
+        if output_path.stat().st_size == 0:
+            raise ValueError(
+                f"Raw thyroid file is empty: "
+                f"{output_path}"
+            )
+
+        return str(output_path)
+
+    if urls is None:
+        urls = RAW_THYROID_DATA_URLS
+
+    errors = []
+
+    for url in urls:
+        try:
+            if output_path.exists():
+                output_path.unlink()
+
+            urllib.request.urlretrieve(
+                url,
+                str(output_path),
+            )
+
+            if not output_path.exists():
+                raise FileNotFoundError(
+                    "Downloaded raw thyroid file "
+                    "was not created."
+                )
+
+            if output_path.stat().st_size == 0:
+                raise ValueError(
+                    "Downloaded raw thyroid file "
+                    "is empty."
+                )
+
+            return str(output_path)
+
+        except Exception as exc:
+            errors.append(
+                f"{url}: {exc}"
+            )
+
+            if output_path.exists():
+                output_path.unlink()
+
+    raise RuntimeError(
+        "Could not download raw UCI "
+        "thyroid0387.data.\n"
+        + "\n".join(errors)
+    )
+
+
+def load_raw_thyroid_table(
+    data_path: str | Path,
+) -> pd.DataFrame:
+    """
+    Load the raw thyroid file without assuming a header row.
+
+    The raw file schema must be checked before assigning final column names.
+    """
+    data_path = Path(
+        data_path
+    )
+
+    if not data_path.exists():
+        raise FileNotFoundError(
+            f"Raw thyroid file not found: "
+            f"{data_path}"
+        )
+
+    df = pd.read_csv(
+        data_path,
+        header=None,
+        na_values=[
+            "?",
+            "NA",
+            "nan",
+            "",
+        ],
+    )
+
+    if df.empty:
+        raise ValueError(
+            "Raw thyroid file contains no rows."
+        )
+
+    return df
+
+
+def assign_raw_thyroid_columns(
+    df: pd.DataFrame,
+    feature_names: Optional[
+        Sequence[str]
+    ] = None,
+    label_col: str = RAW_THYROID_LABEL_COLUMN,
+) -> pd.DataFrame:
+    """
+    Assign stable names to a raw thyroid table.
+
+    By default, generic names are used for the feature columns. This avoids
+    silently assuming that a particular mirror has a specific raw schema.
+    """
+    df = df.copy()
+
+    n_columns = df.shape[1]
+
+    if n_columns < 2:
+        raise ValueError(
+            "Raw thyroid table must contain "
+            "features and one label column."
+        )
+
+    if feature_names is None:
+        feature_names = [
+            f"thyroid_feature_{index + 1}"
+            for index in range(
+                n_columns - 1
+            )
+        ]
+    else:
+        feature_names = list(
+            feature_names
+        )
+
+        if len(feature_names) != (
+            n_columns - 1
+        ):
+            raise ValueError(
+                "feature_names length must equal "
+                "the number of columns minus one."
+            )
+
+    columns = list(
+        feature_names
+    ) + [
+        label_col
+    ]
+
+    df.columns = columns
+
+    return df
 
 
 # ============================================================
@@ -963,7 +734,7 @@ def convert_adbench_outlier_label(
     series: pd.Series,
 ) -> np.ndarray:
     """
-    Convert common ADBench labels to binary labels.
+    Convert common anomaly labels to binary labels.
     """
     positive_values = {
         "o",
@@ -999,9 +770,95 @@ def convert_adbench_outlier_label(
     return y
 
 
+def convert_raw_thyroid_label(
+    series: pd.Series,
+    normal_values: Optional[
+        Sequence[Any]
+    ] = None,
+) -> np.ndarray:
+    """
+    Convert raw thyroid class labels to anomaly labels.
+
+    The default mapping treats normal/negative/n/1 as inliers and all other
+    non-missing classes as anomalies. The mapping must be checked against the
+    actual raw file before publication.
+    """
+    if normal_values is None:
+        normal_values = [
+            "normal",
+            "negative",
+            "n",
+            "1",
+            "normal.",
+        ]
+
+    normal_tokens = {
+        str(value)
+        .strip()
+        .lower()
+        for value in normal_values
+    }
+
+    normalized = (
+        series
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+
+    y = (
+        ~normalized.isin(
+            normal_tokens
+        )
+    ).astype(
+        int
+    ).to_numpy()
+
+    validate_target(
+        y,
+        target_name=(
+            series.name
+            or RAW_THYROID_LABEL_COLUMN
+        ),
+    )
+
+    return y
+
+
 # ============================================================
-# Feature type detection
+# Feature encoding and type detection
 # ============================================================
+
+
+def normalize_binary_series(
+    series: pd.Series,
+) -> pd.Series:
+    """
+    Convert common binary encodings to numeric 0/1 values.
+    """
+    normalized = (
+        series
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+
+    mapping = {
+        "f": 0.0,
+        "false": 0.0,
+        "n": 0.0,
+        "no": 0.0,
+        "0": 0.0,
+        "t": 1.0,
+        "true": 1.0,
+        "y": 1.0,
+        "yes": 1.0,
+        "1": 1.0,
+    }
+
+    return normalized.map(
+        mapping
+    )
 
 
 def detect_feature_types(
@@ -1009,10 +866,9 @@ def detect_feature_types(
     feature_names: Sequence[str],
 ) -> Dict[int, str]:
     """
-    Detect continuous and binary features.
+    Detect binary and continuous features from numeric values.
 
-    Features with at most two observed numeric values are classified as binary.
-    Features with more than two observed values are classified as continuous.
+    Features with at most two observed values are classified as binary.
     """
     feature_types = {}
 
@@ -1021,7 +877,8 @@ def detect_feature_types(
     ):
         if feature_name not in df.columns:
             raise ValueError(
-                f"Feature not found: {feature_name}"
+                f"Feature not found: "
+                f"{feature_name}"
             )
 
         values = pd.to_numeric(
@@ -1031,16 +888,15 @@ def detect_feature_types(
 
         if values.empty:
             raise ValueError(
-                f"Feature contains no numeric values: "
+                f"Feature has no numeric values: "
                 f"{feature_name}"
             )
 
-        n_unique = values.nunique()
-
-        if n_unique <= 2:
-            feature_types[index] = "bin"
-        else:
-            feature_types[index] = "cont"
+        feature_types[index] = (
+            "bin"
+            if values.nunique() <= 2
+            else "cont"
+        )
 
     validate_feature_metadata(
         feature_names=list(feature_names),
@@ -1083,7 +939,132 @@ def get_feature_metadata(
 
 
 # ============================================================
-# Type-specific preprocessing
+# Raw UCI thyroid preparation
+# ============================================================
+
+
+def prepare_raw_thyroid_data(
+    df: pd.DataFrame,
+    label_col: str = RAW_THYROID_LABEL_COLUMN,
+    normal_values: Optional[
+        Sequence[Any]
+    ] = None,
+    include_categorical: bool = False,
+) -> Tuple[
+    pd.DataFrame,
+    np.ndarray,
+    List[str],
+    Dict[int, str],
+]:
+    """
+    Prepare raw UCI thyroid data for benchmark analysis.
+
+    The default path keeps the six continuous variables and binary clinical
+    indicators. Multi-level categorical variables such as referral_source are
+    excluded unless include_categorical is implemented explicitly in a
+    dataset-specific preprocessing pipeline.
+
+    This function does not fit training-dependent imputation or scaling.
+    """
+    validate_required_columns(
+        df,
+        [label_col],
+    )
+
+    y = convert_raw_thyroid_label(
+        df[label_col],
+        normal_values=normal_values,
+    )
+
+    available_binary = [
+        column
+        for column in RAW_THYROID_BINARY_COLUMNS
+        if column in df.columns
+    ]
+
+    available_continuous = [
+        column
+        for column in RAW_THYROID_CONTINUOUS_COLUMNS
+        if column in df.columns
+    ]
+
+    if not available_binary:
+        raise ValueError(
+            "No raw thyroid binary columns "
+            "were found."
+        )
+
+    if not available_continuous:
+        raise ValueError(
+            "No raw thyroid continuous columns "
+            "were found."
+        )
+
+    if include_categorical:
+        raise NotImplementedError(
+            "Multi-level categorical encoding "
+            "must be fitted inside each training "
+            "repetition. Use a dataset-specific "
+            "ColumnTransformer pipeline."
+        )
+
+    feature_names = (
+        available_continuous
+        + available_binary
+    )
+
+    X = pd.DataFrame(
+        index=df.index
+    )
+
+    feature_types = {}
+
+    for feature_name in available_continuous:
+        X[feature_name] = pd.to_numeric(
+            df[feature_name],
+            errors="coerce",
+        )
+
+        feature_types[
+            len(feature_types)
+        ] = "cont"
+
+    for feature_name in available_binary:
+        X[feature_name] = (
+            normalize_binary_series(
+                df[feature_name]
+            )
+        )
+
+        feature_types[
+            len(feature_types)
+        ] = "bin"
+
+    X = X[
+        feature_names
+    ].copy()
+
+    if X.shape[1] == 0:
+        raise ValueError(
+            "No usable raw thyroid features "
+            "were created."
+        )
+
+    validate_feature_metadata(
+        feature_names=feature_names,
+        feature_types=feature_types,
+    )
+
+    return (
+        X,
+        y,
+        feature_names,
+        feature_types,
+    )
+
+
+# ============================================================
+# Generic benchmark preparation
 # ============================================================
 
 
@@ -1107,341 +1088,6 @@ def coerce_numeric_features(
     return output
 
 
-def fit_feature_imputation(
-    X_train: pd.DataFrame,
-    feature_names: Sequence[str],
-    feature_types: Dict[int, str],
-) -> Dict[str, float]:
-    """
-    Fit training-only imputation values.
-
-    Continuous features use the training median.
-    Binary features use the training mode.
-    """
-    validate_feature_metadata(
-        feature_names=list(feature_names),
-        feature_types=feature_types,
-    )
-
-    imputation_values = {}
-
-    for index, feature_name in enumerate(
-        feature_names
-    ):
-        if feature_name not in X_train.columns:
-            raise ValueError(
-                f"Feature not found in X_train: "
-                f"{feature_name}"
-            )
-
-        series = pd.to_numeric(
-            X_train[feature_name],
-            errors="coerce",
-        )
-
-        if feature_types[index] == "cont":
-            value = series.median()
-        else:
-            mode = series.mode(
-                dropna=True
-            )
-
-            if mode.empty:
-                value = 0.0
-            else:
-                value = mode.iloc[0]
-
-        if pd.isna(value):
-            value = 0.0
-
-        imputation_values[
-            feature_name
-        ] = float(value)
-
-    return imputation_values
-
-
-def apply_feature_imputation(
-    X: pd.DataFrame,
-    imputation_values: Dict[str, float],
-) -> pd.DataFrame:
-    """
-    Apply previously fitted imputation values.
-    """
-    output = X.copy()
-
-    for feature_name, value in (
-        imputation_values.items()
-    ):
-        if feature_name not in output.columns:
-            raise ValueError(
-                f"Feature not found: "
-                f"{feature_name}"
-            )
-
-        output[feature_name] = (
-            pd.to_numeric(
-                output[feature_name],
-                errors="coerce",
-            )
-            .fillna(value)
-        )
-
-    return output
-
-
-def fit_standardizer(
-    X_train: pd.DataFrame,
-    feature_names: Sequence[str],
-) -> StandardScaler:
-    """
-    Fit StandardScaler on training data only.
-    """
-    scaler = StandardScaler()
-
-    scaler.fit(
-        X_train[
-            list(feature_names)
-        ]
-    )
-
-    return scaler
-
-
-def apply_standardizer(
-    X: pd.DataFrame,
-    feature_names: Sequence[str],
-    scaler: StandardScaler,
-) -> np.ndarray:
-    """
-    Apply a training-fitted scaler.
-    """
-    return scaler.transform(
-        X[
-            list(feature_names)
-        ]
-    )
-
-
-def fit_mixed_type_preprocessor(
-    X_train: pd.DataFrame,
-    feature_names: Sequence[str],
-    feature_types: Dict[int, str],
-) -> Tuple[
-    Dict[str, float],
-    Optional[StandardScaler],
-    List[int],
-]:
-    """
-    Fit imputation and continuous-feature standardization on training data.
-
-    Binary features are not standardized.
-    """
-    validate_feature_metadata(
-        feature_names=list(feature_names),
-        feature_types=feature_types,
-    )
-
-    imputation_values = fit_feature_imputation(
-        X_train=X_train,
-        feature_names=feature_names,
-        feature_types=feature_types,
-    )
-
-    X_train_imputed = (
-        apply_feature_imputation(
-            X=X_train[
-                list(feature_names)
-            ],
-            imputation_values=imputation_values,
-        )
-    )
-
-    continuous_indices = [
-        index
-        for index, feature_type
-        in feature_types.items()
-        if feature_type == "cont"
-    ]
-
-    continuous_names = [
-        feature_names[index]
-        for index in continuous_indices
-    ]
-
-    scaler = None
-
-    if continuous_names:
-        scaler = fit_standardizer(
-            X_train=X_train_imputed,
-            feature_names=continuous_names,
-        )
-
-    return (
-        imputation_values,
-        scaler,
-        continuous_indices,
-    )
-
-
-def transform_mixed_type_data(
-    X: pd.DataFrame,
-    feature_names: Sequence[str],
-    feature_types: Dict[int, str],
-    imputation_values: Dict[str, float],
-    scaler: Optional[StandardScaler],
-) -> np.ndarray:
-    """
-    Apply a training-fitted mixed-type preprocessor.
-
-    Continuous features are standardized when a scaler is supplied.
-    Binary features remain on their original 0/1 scale.
-    """
-    validate_feature_metadata(
-        feature_names=list(feature_names),
-        feature_types=feature_types,
-    )
-
-    X_selected = X[
-        list(feature_names)
-    ].copy()
-
-    X_imputed = apply_feature_imputation(
-        X=X_selected,
-        imputation_values=imputation_values,
-    )
-
-    output = X_imputed.to_numpy(
-        dtype=float,
-        copy=True,
-    )
-
-    continuous_indices = [
-        index
-        for index, feature_type
-        in feature_types.items()
-        if feature_type == "cont"
-    ]
-
-    continuous_names = [
-        feature_names[index]
-        for index in continuous_indices
-    ]
-
-    if scaler is not None and continuous_names:
-        output[
-            :,
-            continuous_indices,
-        ] = scaler.transform(
-            X_imputed[
-                continuous_names
-            ]
-        )
-
-    return output
-
-
-def train_test_split_mixed_type(
-    X: pd.DataFrame,
-    y: np.ndarray,
-    feature_types: Dict[int, str],
-    test_size: float = 0.30,
-    random_state: int = 42,
-) -> Tuple[
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-]:
-    """
-    Split mixed-type data and apply training-only preprocessing.
-
-    Processing order
-    ----------------
-    1. Stratified train/test split.
-    2. Fit imputation on X_train.
-    3. Fit continuous standardizer on X_train.
-    4. Transform X_train and X_test.
-    5. Leave binary features unstandardized.
-    """
-    if not isinstance(X, pd.DataFrame):
-        raise TypeError(
-            "X must be a pandas DataFrame."
-        )
-
-    y = np.asarray(
-        y,
-        dtype=int,
-    )
-
-    if len(X) != len(y):
-        raise ValueError(
-            "X and y must have the same "
-            "number of rows."
-        )
-
-    feature_names = list(
-        X.columns
-    )
-
-    validate_feature_metadata(
-        feature_names=feature_names,
-        feature_types=feature_types,
-    )
-
-    validate_target(
-        y,
-        target_name="y",
-    )
-
-    X_train, X_test, y_train, y_test = (
-        train_test_split(
-            X,
-            y,
-            test_size=test_size,
-            stratify=y,
-            random_state=random_state,
-        )
-    )
-
-    (
-        imputation_values,
-        scaler,
-        _,
-    ) = fit_mixed_type_preprocessor(
-        X_train=X_train,
-        feature_names=feature_names,
-        feature_types=feature_types,
-    )
-
-    X_train_processed = (
-        transform_mixed_type_data(
-            X=X_train,
-            feature_names=feature_names,
-            feature_types=feature_types,
-            imputation_values=imputation_values,
-            scaler=scaler,
-        )
-    )
-
-    X_test_processed = (
-        transform_mixed_type_data(
-            X=X_test,
-            feature_names=feature_names,
-            feature_types=feature_types,
-            imputation_values=imputation_values,
-            scaler=scaler,
-        )
-    )
-
-    return (
-        X_train_processed,
-        X_test_processed,
-        y_train,
-        y_test,
-    )
-
-
 def prepare_benchmark_data(
     df: pd.DataFrame,
     label_col: str = "Outlier_label",
@@ -1456,10 +1102,10 @@ def prepare_benchmark_data(
     Dict[int, str],
 ]:
     """
-    Prepare a benchmark dataset.
+    Prepare a numeric benchmark dataset.
 
-    This function performs deterministic numeric conversion and label conversion.
-    It does not fit training-dependent preprocessing.
+    This function is appropriate for already encoded benchmark CSV files.
+    It is not appropriate for raw categorical thyroid data.
     """
     validate_required_columns(
         df,
@@ -1535,7 +1181,296 @@ def prepare_benchmark_data(
 
 
 # ============================================================
-# Fixed subset creation
+# Training-dependent preprocessing
+# ============================================================
+
+
+def fit_feature_imputation(
+    X_train: pd.DataFrame,
+    feature_names: Sequence[str],
+    feature_types: Dict[int, str],
+) -> Dict[str, float]:
+    """
+    Fit training-only imputation values.
+
+    Continuous features use the training median.
+    Binary features use the training mode.
+    """
+    validate_feature_metadata(
+        feature_names=list(feature_names),
+        feature_types=feature_types,
+    )
+
+    values = {}
+
+    for index, feature_name in enumerate(
+        feature_names
+    ):
+        if feature_name not in X_train.columns:
+            raise ValueError(
+                f"Feature not found: "
+                f"{feature_name}"
+            )
+
+        series = pd.to_numeric(
+            X_train[feature_name],
+            errors="coerce",
+        )
+
+        if feature_types[index] == "cont":
+            value = series.median()
+        else:
+            mode = series.mode(
+                dropna=True
+            )
+
+            value = (
+                0.0
+                if mode.empty
+                else mode.iloc[0]
+            )
+
+        if pd.isna(value):
+            value = 0.0
+
+        values[feature_name] = float(
+            value
+        )
+
+    return values
+
+
+def apply_feature_imputation(
+    X: pd.DataFrame,
+    imputation_values: Dict[str, float],
+) -> pd.DataFrame:
+    """
+    Apply training-fitted imputation values.
+    """
+    output = X.copy()
+
+    for feature_name, value in (
+        imputation_values.items()
+    ):
+        if feature_name not in output.columns:
+            raise ValueError(
+                f"Feature not found: "
+                f"{feature_name}"
+            )
+
+        output[feature_name] = (
+            pd.to_numeric(
+                output[feature_name],
+                errors="coerce",
+            )
+            .fillna(value)
+        )
+
+    return output
+
+
+def fit_mixed_type_preprocessor(
+    X_train: pd.DataFrame,
+    feature_names: Sequence[str],
+    feature_types: Dict[int, str],
+) -> Tuple[
+    Dict[str, float],
+    Optional[StandardScaler],
+]:
+    """
+    Fit training-only imputation and continuous scaling.
+
+    Binary features are not standardized.
+    """
+    imputation_values = (
+        fit_feature_imputation(
+            X_train=X_train,
+            feature_names=feature_names,
+            feature_types=feature_types,
+        )
+    )
+
+    X_train_imputed = (
+        apply_feature_imputation(
+            X=X_train[
+                list(feature_names)
+            ],
+            imputation_values=imputation_values,
+        )
+    )
+
+    continuous_names = [
+        feature_names[index]
+        for index, feature_type
+        in feature_types.items()
+        if feature_type == "cont"
+    ]
+
+    scaler = None
+
+    if continuous_names:
+        scaler = StandardScaler()
+
+        scaler.fit(
+            X_train_imputed[
+                continuous_names
+            ]
+        )
+
+    return (
+        imputation_values,
+        scaler,
+    )
+
+
+def transform_mixed_type_data(
+    X: pd.DataFrame,
+    feature_names: Sequence[str],
+    feature_types: Dict[int, str],
+    imputation_values: Dict[str, float],
+    scaler: Optional[StandardScaler],
+) -> np.ndarray:
+    """
+    Transform data with a training-fitted preprocessor.
+
+    Continuous features are standardized.
+    Binary features remain on their 0/1 scale.
+    """
+    X_selected = X[
+        list(feature_names)
+    ].copy()
+
+    X_imputed = (
+        apply_feature_imputation(
+            X=X_selected,
+            imputation_values=imputation_values,
+        )
+    )
+
+    output = X_imputed.to_numpy(
+        dtype=float,
+        copy=True,
+    )
+
+    continuous_indices = [
+        index
+        for index, feature_type
+        in feature_types.items()
+        if feature_type == "cont"
+    ]
+
+    continuous_names = [
+        feature_names[index]
+        for index in continuous_indices
+    ]
+
+    if scaler is not None and continuous_names:
+        output[
+            :,
+            continuous_indices
+        ] = scaler.transform(
+            X_imputed[
+                continuous_names
+            ]
+        )
+
+    return output
+
+
+def train_test_split_mixed_type(
+    X: pd.DataFrame,
+    y: np.ndarray,
+    feature_types: Dict[int, str],
+    test_size: float = 0.30,
+    random_state: int = 42,
+) -> Tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
+    """
+    Split data and fit preprocessing using training data only.
+    """
+    if not isinstance(X, pd.DataFrame):
+        raise TypeError(
+            "X must be a pandas DataFrame."
+        )
+
+    y = np.asarray(
+        y,
+        dtype=int,
+    )
+
+    if len(X) != len(y):
+        raise ValueError(
+            "X and y must have the same "
+            "number of rows."
+        )
+
+    feature_names = list(
+        X.columns
+    )
+
+    validate_feature_metadata(
+        feature_names=feature_names,
+        feature_types=feature_types,
+    )
+
+    validate_target(
+        y,
+        target_name="y",
+    )
+
+    X_train, X_test, y_train, y_test = (
+        train_test_split(
+            X,
+            y,
+            test_size=test_size,
+            stratify=y,
+            random_state=random_state,
+        )
+    )
+
+    (
+        imputation_values,
+        scaler,
+    ) = fit_mixed_type_preprocessor(
+        X_train=X_train,
+        feature_names=feature_names,
+        feature_types=feature_types,
+    )
+
+    X_train_processed = (
+        transform_mixed_type_data(
+            X=X_train,
+            feature_names=feature_names,
+            feature_types=feature_types,
+            imputation_values=imputation_values,
+            scaler=scaler,
+        )
+    )
+
+    X_test_processed = (
+        transform_mixed_type_data(
+            X=X_test,
+            feature_names=feature_names,
+            feature_types=feature_types,
+            imputation_values=imputation_values,
+            scaler=scaler,
+        )
+    )
+
+    return (
+        X_train_processed,
+        X_test_processed,
+        y_train,
+        y_test,
+    )
+
+
+# ============================================================
+# Fixed subset utilities
 # ============================================================
 
 
@@ -1547,8 +1482,6 @@ def make_stratified_subset(
 ) -> pd.DataFrame:
     """
     Create a fixed stratified subset.
-
-    The saved subset should be reused for all subsequent analyses.
     """
     validate_required_columns(
         df,
@@ -1569,48 +1502,39 @@ def make_stratified_subset(
         random_state
     )
 
-    label_values = (
+    groups = []
+
+    for label_value in (
         df[label_col]
         .dropna()
         .unique()
-    )
-
-    groups = []
-
-    for label_value in label_values:
+    ):
         group = df.loc[
             df[label_col] == label_value
         ]
 
-        proportion = (
-            len(group) / len(df)
-        )
-
-        n_group = int(
-            round(
-                n_samples
-                * proportion
-            )
-        )
-
         n_group = min(
-            n_group,
             len(group),
+            int(
+                round(
+                    n_samples
+                    * len(group)
+                    / len(df)
+                )
+            ),
         )
 
         if n_group > 0:
-            selected = group.sample(
-                n=n_group,
-                random_state=int(
-                    rng.integers(
-                        0,
-                        2**32 - 1,
-                    )
-                ),
-            )
-
             groups.append(
-                selected
+                group.sample(
+                    n=n_group,
+                    random_state=int(
+                        rng.integers(
+                            0,
+                            2**32 - 1,
+                        )
+                    ),
+                )
             )
 
     if not groups:
@@ -1634,20 +1558,18 @@ def make_stratified_subset(
         )
 
         if n_extra > 0:
-            extra = remaining.sample(
-                n=n_extra,
-                random_state=int(
-                    rng.integers(
-                        0,
-                        2**32 - 1,
-                    )
-                ),
-            )
-
             subset = pd.concat(
                 [
                     subset,
-                    extra,
+                    remaining.sample(
+                        n=n_extra,
+                        random_state=int(
+                            rng.integers(
+                                0,
+                                2**32 - 1,
+                            )
+                        ),
+                    ),
                 ],
                 axis=0,
             )
@@ -1688,8 +1610,8 @@ def save_fixed_subset(
     )
 
     output_path.parent.mkdir(
-        exist_ok=True,
         parents=True,
+        exist_ok=True,
     )
 
     df.to_csv(
@@ -1710,7 +1632,8 @@ def load_fixed_subset(
 
     if not input_path.exists():
         raise FileNotFoundError(
-            f"Fixed subset not found: {input_path}"
+            f"Fixed subset not found: "
+            f"{input_path}"
         )
 
     return pd.read_csv(
@@ -1784,11 +1707,7 @@ def prepare_survival_data(
     event_col: str,
 ) -> pd.DataFrame:
     """
-    Convert survival dataset columns to numeric values and remove rows lacking
-    valid time/event values.
-
-    Training-dependent imputation and scaling should still be performed inside
-    each training/test repetition.
+    Prepare survival data.
     """
     validate_survival_schema(
         df=df,
@@ -1853,8 +1772,8 @@ def save_dataframe(
     )
 
     output_path.parent.mkdir(
-        exist_ok=True,
         parents=True,
+        exist_ok=True,
     )
 
     df.to_csv(
@@ -1875,8 +1794,8 @@ def save_json(
     )
 
     output_path.parent.mkdir(
-        exist_ok=True,
         parents=True,
+        exist_ok=True,
     )
 
     with open(
@@ -1892,24 +1811,109 @@ def save_json(
         )
 
 
+def create_analysis_metadata(
+    df: pd.DataFrame,
+    dataset_name: str,
+    feature_names: Sequence[str],
+    feature_types: Dict[int, str],
+    label: Optional[np.ndarray] = None,
+    config: Optional[
+        Dict[str, Any]
+    ] = None,
+) -> Dict[str, Any]:
+    """
+    Create reproducibility metadata.
+    """
+    validate_feature_metadata(
+        feature_names=list(feature_names),
+        feature_types=feature_types,
+    )
+
+    metadata = {
+        "dataset": dataset_name,
+        "n_observations": int(
+            df.shape[0]
+        ),
+        "n_features": int(
+            len(feature_names)
+        ),
+        "feature_names": list(
+            feature_names
+        ),
+        "feature_types": {
+            str(index): value
+            for index, value
+            in feature_types.items()
+        },
+        "n_continuous": int(
+            sum(
+                value == "cont"
+                for value
+                in feature_types.values()
+            )
+        ),
+        "n_binary": int(
+            sum(
+                value == "bin"
+                for value
+                in feature_types.values()
+            )
+        ),
+    }
+
+    if label is not None:
+        label = np.asarray(
+            label,
+            dtype=int,
+        )
+
+        validate_target(
+            label,
+            target_name="label",
+        )
+
+        metadata["n_positive"] = int(
+            label.sum()
+        )
+
+        metadata["positive_rate"] = float(
+            label.mean()
+        )
+
+    if config is not None:
+        metadata["config"] = config
+
+    return metadata
+
+
+def save_analysis_metadata(
+    metadata: Dict[str, Any],
+    output_path: str | Path,
+) -> None:
+    """
+    Save reproducibility metadata.
+    """
+    save_json(
+        metadata,
+        output_path,
+    )
+
+
 def save_benchmark_outputs(
     results: Dict[str, Any],
     output_dir: str | Path,
     dataset_name: str,
 ) -> None:
     """
-    Save outputs from benchmark-style result dictionaries.
-
-    This function supports the older dictionary-based notebook output format.
-    The current benchmark.py also provides its own output saver.
+    Save dictionary-style benchmark results.
     """
     output_dir = Path(
         output_dir
     )
 
     output_dir.mkdir(
-        exist_ok=True,
         parents=True,
+        exist_ok=True,
     )
 
     output_mapping = {
@@ -1956,94 +1960,8 @@ def save_benchmark_outputs(
     )
 
 
-def create_analysis_metadata(
-    df: pd.DataFrame,
-    dataset_name: str,
-    feature_names: Sequence[str],
-    feature_types: Dict[int, str],
-    label: Optional[np.ndarray] = None,
-    config: Optional[
-        Dict[str, Any]
-    ] = None,
-) -> Dict[str, Any]:
-    """
-    Create reproducibility metadata for one analysis.
-    """
-    validate_feature_metadata(
-        feature_names=list(feature_names),
-        feature_types=feature_types,
-    )
-
-    metadata = {
-        "dataset": dataset_name,
-        "n_observations": int(
-            df.shape[0]
-        ),
-        "n_features": int(
-            len(feature_names)
-        ),
-        "feature_names": list(
-            feature_names
-        ),
-        "feature_types": {
-            str(key): value
-            for key, value
-            in feature_types.items()
-        },
-        "n_continuous": int(
-            sum(
-                value == "cont"
-                for value in feature_types.values()
-            )
-        ),
-        "n_binary": int(
-            sum(
-                value == "bin"
-                for value in feature_types.values()
-            )
-        ),
-    }
-
-    if label is not None:
-        label = np.asarray(
-            label,
-            dtype=int,
-        )
-
-        validate_target(
-            label,
-            target_name="label",
-        )
-
-        metadata["n_positive"] = int(
-            label.sum()
-        )
-
-        metadata["positive_rate"] = float(
-            label.mean()
-        )
-
-    if config is not None:
-        metadata["config"] = config
-
-    return metadata
-
-
-def save_analysis_metadata(
-    metadata: Dict[str, Any],
-    output_path: str | Path,
-) -> None:
-    """
-    Save reproducibility metadata.
-    """
-    save_json(
-        metadata,
-        output_path,
-    )
-
-
 # ============================================================
-# Compatibility aliases
+# Compatibility helper
 # ============================================================
 
 
@@ -2052,21 +1970,9 @@ def create_features_thyroid(
     label_col: str = "Outlier_label",
 ):
     """
-    Compatibility helper for earlier Annthyroid notebooks.
+    Backward-compatible helper for already encoded thyroid-like data.
 
-    Returns
-    -------
-    processed:
-        Numeric feature dataframe with a binary label column appended.
-
-    feature_names:
-        Feature column names.
-
-    label_col:
-        Name of the appended binary label column.
-
-    For new analyses, use prepare_benchmark_data() and
-    train_test_split_mixed_type().
+    For raw UCI thyroid data, use prepare_raw_thyroid_data().
     """
     X, y, feature_names, feature_types = (
         prepare_benchmark_data(
@@ -2077,7 +1983,11 @@ def create_features_thyroid(
 
     processed = X.copy()
 
-    processed[label_col] = y
+    processed[label_col] = np.where(
+        y == 1,
+        "o",
+        "normal",
+    )
 
     return (
         processed,
