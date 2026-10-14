@@ -129,6 +129,26 @@ The repository provides the Python implementation and experimental notebooks cor
 
 For consistency, the public release should use **main** as the canonical branch.
 
+## Missing-data handling
+
+Original feature values are retained with missing entries encoded as
+`NaN`. Before train/test splitting, a binary missingness indicator is
+created for every original feature (`<feature>_missing`).
+
+Within each repeated train/test split:
+
+- Continuous variables are imputed using the median of the training fold.
+- Binary and categorical variables are imputed using the most frequent
+  training-fold value.
+- The fitted imputers are applied to both the training and test folds.
+- No imputation statistic is estimated from the test fold.
+- Measurement-status indicators, such as `TSH_measured`, remain in the
+  feature matrix.
+
+This prevents test-fold information from influencing imputation and
+preserves the distinction between an observed value, an unmeasured test,
+and a missing value.
+
 ## Citation
 
 If you use this repository, please cite the manuscript:
