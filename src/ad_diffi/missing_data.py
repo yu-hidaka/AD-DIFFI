@@ -13,6 +13,7 @@ preventing test-fold information from influencing imputation statistics.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
@@ -21,6 +22,21 @@ import pandas as pd
 from sklearn.impute import SimpleImputer
 
 MISSING_INDICATOR_SUFFIX = "_missing"
+
+FoldPreprocessFunction = Callable[
+    [
+        pd.DataFrame,
+        pd.DataFrame,
+        np.ndarray,
+        np.ndarray,
+    ],
+    tuple[
+        pd.DataFrame,
+        pd.DataFrame,
+        np.ndarray,
+        np.ndarray,
+    ],
+]
 
 
 @dataclass(frozen=True)
@@ -48,12 +64,15 @@ class MissingDataConfig:
     continuous_strategy: str = "median"
     binary_strategy: str = "most_frequent"
 
-    def validate_columns(self, data: pd.DataFrame) -> None:
+    def validate_columns(
+        self,
+        data: pd.DataFrame,
+    ) -> None:
         """Raise an error if configured columns are absent."""
 
-        required_columns = list(self.continuous_columns) + list(
-            self.binary_columns
-        )
+        required_columns = list(
+            self.continuous_columns
+        ) + list(self.binary_columns)
 
         missing_columns = [
             column
@@ -73,7 +92,7 @@ def add_missing_indicators(
     columns: Iterable[str],
     suffix: str = MISSING_INDICATOR_SUFFIX,
 ) -> tuple[pd.DataFrame, list[str]]:
-    """Add binary missingness indicators for the specified columns.
+    """Add binary missingness indicators for specified columns.
 
     Parameters
     ----------
@@ -96,7 +115,9 @@ def add_missing_indicators(
 
     for column in columns:
         if column not in output.columns:
-            raise ValueError(f"Column not found: {column}")
+            raise ValueError(
+                f"Column not found: {column}"
+            )
 
         indicator_column = f"{column}{suffix}"
 
@@ -106,9 +127,53 @@ def add_missing_indicators(
             .astype("int8")
         )
 
-        indicator_columns.append(indicator_column)
+        indicator_columns.append(
+            indicator_column
+        )
 
     return output, indicator_columns
+
+
+def _ensure_dataframe(
+    data,
+    feature_names: Sequence[str],
+) -> pd.DataFrame:
+    """Convert an array-like feature matrix to a DataFrame.
+
+    Parameters
+    ----------
+    data:
+        A pandas DataFrame or two-dimensional NumPy array.
+    feature_names:
+        Column names corresponding to the columns of `data`.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame with the specified feature names.
+    """
+
+    if isinstance(data, pd.DataFrame):
+        return data.copy()
+
+    data = np.asarray(data)
+
+    if data.ndim != 2:
+        raise ValueError(
+            "Feature matrix must be two-dimensional."
+        )
+
+    if data.shape[1] != len(feature_names):
+        raise ValueError(
+            "The number of feature names must match "
+            "the number of columns in the feature "
+            "matrix."
+        )
+
+    return pd.DataFrame(
+        data,
+        columns=list(feature_names),
+    )
 
 
 class FoldWiseImputer:
@@ -122,8 +187,12 @@ class FoldWiseImputer:
     def __init__(
         self,
         config: MissingDataConfig,
+        feature_names: Sequence[str],
     ) -> None:
         self.config = config
+        self.feature_names = list(
+            feature_names
+        )
 
         self.continuous_imputer = SimpleImputer(
             strategy=config.continuous_strategy,
@@ -139,8 +208,8 @@ class FoldWiseImputer:
 
     def fit_transform(
         self,
-        X_train: pd.DataFrame,
-        X_test: pd.DataFrame,
+        X_train,
+        X_test,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Fit imputers on `X_train` and transform both folds.
 
@@ -148,8 +217,10 @@ class FoldWiseImputer:
         ----------
         X_train:
             Training-fold feature matrix. Missing values are allowed.
+            Both DataFrame and two-dimensional NumPy array are accepted.
         X_test:
             Test-fold feature matrix. Missing values are allowed.
+            Both DataFrame and two-dimensional NumPy array are accepted.
 
         Returns
         -------
@@ -157,8 +228,22 @@ class FoldWiseImputer:
             Imputed training and test feature matrices.
         """
 
-        self.config.validate_columns(X_train)
-        self.config.validate_columns(X_test)
+        X_train = _ensure_dataframe(
+            data=X_train,
+            feature_names=self.feature_names,
+        )
+
+        X_test = _ensure_dataframe(
+            data=X_test,
+            feature_names=self.feature_names,
+        )
+
+        self.config.validate_columns(
+            X_train
+        )
+        self.config.validate_columns(
+            X_test
+        )
 
         X_train = X_train.copy()
         X_test = X_test.copy()
@@ -194,21 +279,25 @@ class FoldWiseImputer:
             )
         )
 
-        X_train.loc[:, continuous_columns] = (
-            X_train_continuous
-        )
+        X_train.loc[
+            :,
+            continuous_columns,
+        ] = X_train_continuous
 
-        X_test.loc[:, continuous_columns] = (
-            X_test_continuous
-        )
+        X_test.loc[
+            :,
+            continuous_columns,
+        ] = X_test_continuous
 
-        X_train.loc[:, binary_columns] = (
-            X_train_binary
-        )
+        X_train.loc[
+            :,
+            binary_columns,
+        ] = X_train_binary
 
-        X_test.loc[:, binary_columns] = (
-            X_test_binary
-        )
+        X_test.loc[
+            :,
+            binary_columns,
+        ] = X_test_binary
 
         self._is_fitted = True
 
@@ -216,7 +305,7 @@ class FoldWiseImputer:
 
     def transform(
         self,
-        X: pd.DataFrame,
+        X,
     ) -> pd.DataFrame:
         """Transform new data using previously fitted imputers."""
 
@@ -225,6 +314,11 @@ class FoldWiseImputer:
                 "FoldWiseImputer must be fitted before "
                 "calling transform()."
             )
+
+        X = _ensure_dataframe(
+            data=X,
+            feature_names=self.feature_names,
+        )
 
         self.config.validate_columns(X)
 
@@ -237,16 +331,18 @@ class FoldWiseImputer:
             self.config.binary_columns
         )
 
-        X.loc[:, continuous_columns] = (
-            self.continuous_imputer.transform(
-                X[continuous_columns]
-            )
+        X.loc[
+            :,
+            continuous_columns,
+        ] = self.continuous_imputer.transform(
+            X[continuous_columns]
         )
 
-        X.loc[:, binary_columns] = (
-            self.binary_imputer.transform(
-                X[binary_columns]
-            )
+        X.loc[
+            :,
+            binary_columns,
+        ] = self.binary_imputer.transform(
+            X[binary_columns]
         )
 
         return X
@@ -254,27 +350,44 @@ class FoldWiseImputer:
 
 def make_fold_preprocess_fn(
     config: MissingDataConfig,
-) -> callable:
+    feature_names: Sequence[str],
+) -> FoldPreprocessFunction:
     """Create a preprocessing function for use inside a benchmark.
 
     The returned function is intended to be called after each
     train/test split. It fits imputers only on the training fold.
 
+    Parameters
+    ----------
+    config:
+        Missing-data configuration.
+    feature_names:
+        Names of all columns in the feature matrix, including any
+        missingness-indicator columns.
+
     Returns
     -------
-    callable
+    FoldPreprocessFunction
         A function with signature
         `(X_train, X_test, y_train, y_test)` that returns imputed
         `(X_train, X_test, y_train, y_test)`.
     """
 
     def preprocess_fold(
-        X_train: pd.DataFrame,
-        X_test: pd.DataFrame,
+        X_train,
+        X_test,
         y_train: np.ndarray,
         y_test: np.ndarray,
-    ) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, np.ndarray]:
-        imputer = FoldWiseImputer(config)
+    ) -> tuple[
+        pd.DataFrame,
+        pd.DataFrame,
+        np.ndarray,
+        np.ndarray,
+    ]:
+        imputer = FoldWiseImputer(
+            config=config,
+            feature_names=feature_names,
+        )
 
         X_train_imputed, X_test_imputed = (
             imputer.fit_transform(
