@@ -701,6 +701,16 @@ def fit_downstream_models(
 
     Feature selection has already been performed using training data only.
     """
+    X_train = np.asarray(
+        X_train,
+        dtype=float,
+    )
+
+    X_test = np.asarray(
+        X_test,
+        dtype=float,
+    )
+
     selected_indices = np.asarray(
         selected_indices,
         dtype=int,
@@ -715,6 +725,7 @@ def fit_downstream_models(
         :,
         selected_indices,
     ]
+
     X_test_selected = X_test[
         :,
         selected_indices,
@@ -729,7 +740,9 @@ def fit_downstream_models(
         random_state=random_state,
     )
 
-    downstream_if.fit(X_train_selected)
+    downstream_if.fit(
+        X_train_selected
+    )
 
     if_scores = (
         -downstream_if.decision_function(
