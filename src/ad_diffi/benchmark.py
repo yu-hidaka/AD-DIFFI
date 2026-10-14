@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -25,17 +26,28 @@ from .utils import (
 )
 
 
-ORIGINAL_METHOD = (
-    "Original DIFFI"
-)
-
-AD_DIFFI_METHOD = (
-    "AD-DIFFI"
-)
+ORIGINAL_METHOD = "Original DIFFI"
+AD_DIFFI_METHOD = "AD-DIFFI"
 
 METHOD_ORDER = [
     ORIGINAL_METHOD,
     AD_DIFFI_METHOD,
+]
+
+
+FoldPreprocessFunction = Callable[
+    [
+        pd.DataFrame,
+        pd.DataFrame,
+        np.ndarray,
+        np.ndarray,
+    ],
+    Tuple[
+        pd.DataFrame,
+        pd.DataFrame,
+        np.ndarray,
+        np.ndarray,
+    ],
 ]
 
 
@@ -53,9 +65,7 @@ class BenchmarkConfig:
     max_features: float = 1.0
     bootstrap: bool = False
 
-    model_contamination: Optional[
-        float
-    ] = None
+    model_contamination: Optional[float] = None
 
     top_k: int = 6
     downstream_max_iter: int = 1000
@@ -67,9 +77,7 @@ class BenchmarkConfig:
                 "n_repeats must be at least 1."
             )
 
-        if not (
-            0.0 < self.test_size < 1.0
-        ):
+        if not (0.0 < self.test_size < 1.0):
             raise ValueError(
                 "test_size must be in (0, 1)."
             )
@@ -85,8 +93,7 @@ class BenchmarkConfig:
             )
 
         if (
-            self.model_contamination
-            is not None
+            self.model_contamination is not None
             and not (
                 0.0
                 < self.model_contamination
@@ -117,31 +124,17 @@ def resolve_contamination(
     Resolve the Isolation Forest contamination parameter.
 
     If no value is supplied, use the observed dataset-level anomaly rate.
-    This value is computed once before repeated splitting and is fixed across
-    repetitions.
+    This value is computed once before repeated splitting and is fixed
+    across repetitions.
     """
-    if (
-        config.model_contamination
-        is not None
-    ):
-        return float(
-            config.model_contamination
-        )
+    if config.model_contamination is not None:
+        return float(config.model_contamination)
 
-    y = np.asarray(
-        y,
-        dtype=int,
-    )
+    y = np.asarray(y, dtype=int)
 
-    contamination = float(
-        y.mean()
-    )
+    contamination = float(y.mean())
 
-    if not (
-        0.0
-        < contamination
-        < 0.5
-    ):
+    if not (0.0 < contamination < 0.5):
         raise ValueError(
             "Observed contamination must be "
             "in (0, 0.5)."
@@ -199,9 +192,7 @@ def fit_isolation_forest(
         random_state=random_state,
     )
 
-    model.fit(
-        X_train
-    )
+    model.fit(X_train)
 
     return model
 
@@ -213,14 +204,9 @@ def get_model_anomaly_mask(
     """
     Generate model-defined outlier labels.
     """
-    X = np.asarray(
-        X,
-        dtype=float,
-    )
+    X = np.asarray(X, dtype=float)
 
-    return (
-        model.predict(X) == -1
-    )
+    return model.predict(X) == -1
 
 
 def get_model_anomaly_scores(
@@ -230,14 +216,9 @@ def get_model_anomaly_scores(
     """
     Return larger-is-more-anomalous scores.
     """
-    X = np.asarray(
-        X,
-        dtype=float,
-    )
+    X = np.asarray(X, dtype=float)
 
-    return -model.decision_function(
-        X
-    )
+    return -model.decision_function(X)
 
 
 def _get_iic(
@@ -258,21 +239,15 @@ def _get_iic(
         dtype=float,
     )
 
-    children_left = (
-        tree.children_left
-    )
-
-    children_right = (
-        tree.children_right
-    )
+    children_left = tree.children_left
+    children_right = tree.children_right
 
     if predictions.shape[0] == 0:
         return lambda_values
 
     node_indicator = (
-        estimator.decision_path(
-            predictions
-        ).toarray()
+        estimator.decision_path(predictions)
+        .toarray()
     )
 
     n_samples_node = np.sum(
@@ -280,12 +255,8 @@ def _get_iic(
         axis=0,
     )
 
-    for node in range(
-        tree.node_count
-    ):
-        n_current = (
-            n_samples_node[node]
-        )
+    for node in range(tree.node_count):
+        n_current = n_samples_node[node]
 
         if (
             children_left[node]
@@ -302,7 +273,6 @@ def _get_iic(
         n_left = n_samples_node[
             children_left[node]
         ]
-
         n_right = n_samples_node[
             children_right[node]
         ]
@@ -314,18 +284,16 @@ def _get_iic(
         current_min = (
             0.5
             if n_current == 2
-            else ceil(n_current / 2)
-            / n_current
+            else ceil(n_current / 2) / n_current
         )
 
         current_max = (
             n_current - 1
         ) / n_current
 
-        split_imbalance = max(
-            n_left,
-            n_right,
-        ) / n_current
+        split_imbalance = (
+            max(n_left, n_right) / n_current
+        )
 
         if (
             adjust_iic
@@ -363,20 +331,14 @@ def original_diffi_importance(
     """
     Compute Original DIFFI feature scores.
     """
-    X = np.asarray(
-        X,
-        dtype=float,
-    )
+    X = np.asarray(X, dtype=float)
 
     if X.ndim != 2:
         raise ValueError(
             "X must be two-dimensional."
         )
 
-    if not hasattr(
-        iforest,
-        "estimators_",
-    ):
+    if not hasattr(iforest, "estimators_"):
         raise ValueError(
             "iforest must be fitted."
         )
@@ -387,17 +349,14 @@ def original_diffi_importance(
         n_features,
         dtype=float,
     )
-
     cfi_inliers = np.zeros(
         n_features,
         dtype=float,
     )
-
     counter_outliers = np.zeros(
         n_features,
         dtype=int,
     )
-
     counter_inliers = np.zeros(
         n_features,
         dtype=int,
@@ -416,10 +375,7 @@ def original_diffi_importance(
             ]
         )
 
-        X_inbag = X[
-            inbag_indices
-        ]
-
+        X_inbag = X[inbag_indices]
         score_inbag = anomaly_scores[
             inbag_indices
         ]
@@ -427,7 +383,6 @@ def original_diffi_importance(
         X_outliers = X_inbag[
             score_inbag < 0
         ]
-
         X_inliers = X_inbag[
             score_inbag >= 0
         ]
@@ -440,13 +395,8 @@ def original_diffi_importance(
 
         tree = estimator.tree_
 
-        children_left = (
-            tree.children_left
-        )
-
-        children_right = (
-            tree.children_right
-        )
+        children_left = tree.children_left
+        children_right = tree.children_right
 
         split_feature = tree.feature
 
@@ -454,7 +404,6 @@ def original_diffi_importance(
             tree.node_count,
             dtype=np.int64,
         )
-
         is_leaves = np.zeros(
             tree.node_count,
             dtype=bool,
@@ -463,9 +412,7 @@ def original_diffi_importance(
         stack = [(0, -1)]
 
         while stack:
-            node_id, parent_depth = (
-                stack.pop()
-            )
+            node_id, parent_depth = stack.pop()
 
             node_depth[node_id] = (
                 parent_depth + 1
@@ -481,7 +428,6 @@ def original_diffi_importance(
                         parent_depth + 1,
                     )
                 )
-
                 stack.append(
                     (
                         children_right[node_id],
@@ -509,9 +455,7 @@ def original_diffi_importance(
                 ).toarray()
             )
 
-            for row in range(
-                len(X_subset)
-            ):
+            for row in range(len(X_subset)):
                 path = np.where(
                     node_indicator[row] == 1
                 )[0]
@@ -565,27 +509,21 @@ def original_diffi_importance(
     fi_out = np.divide(
         cfi_outliers,
         counter_outliers,
-        out=np.zeros_like(
-            cfi_outliers
-        ),
+        out=np.zeros_like(cfi_outliers),
         where=counter_outliers > 0,
     )
 
     fi_in = np.divide(
         cfi_inliers,
         counter_inliers,
-        out=np.zeros_like(
-            cfi_inliers
-        ),
+        out=np.zeros_like(cfi_inliers),
         where=counter_inliers > 0,
     )
 
     scores = np.divide(
         fi_out,
         fi_in,
-        out=np.zeros_like(
-            fi_out
-        ),
+        out=np.zeros_like(fi_out),
         where=fi_in > 0,
     )
 
@@ -605,10 +543,7 @@ def compute_ad_diffi_importance(
     """
     Compute raw enrichment-based AD-DIFFI scores using core.py.
     """
-    X = np.asarray(
-        X,
-        dtype=float,
-    )
+    X = np.asarray(X, dtype=float)
 
     anomaly_mask = np.asarray(
         anomaly_mask,
@@ -620,17 +555,16 @@ def compute_ad_diffi_importance(
             "X must be two-dimensional."
         )
 
-    if anomaly_mask.shape != (
-        X.shape[0],
-    ):
+    if anomaly_mask.shape != (X.shape[0],):
         raise ValueError(
             "anomaly_mask must have shape "
             "(n_samples,)."
         )
 
-    if anomaly_mask.all() or (
-        ~anomaly_mask
-    ).all():
+    if (
+        anomaly_mask.all()
+        or (~anomaly_mask).all()
+    ):
         raise ValueError(
             "anomaly_mask must contain both "
             "outliers and inliers."
@@ -648,9 +582,7 @@ def compute_ad_diffi_importance(
         dtype=float,
     )
 
-    if scores.shape != (
-        X.shape[1],
-    ):
+    if scores.shape != (X.shape[1],):
         raise ValueError(
             "Unexpected AD-DIFFI score shape: "
             f"{scores.shape}"
@@ -663,15 +595,8 @@ def safe_roc_auc(
     y_true: np.ndarray,
     scores: np.ndarray,
 ) -> float:
-    y_true = np.asarray(
-        y_true,
-        dtype=int,
-    )
-
-    scores = np.asarray(
-        scores,
-        dtype=float,
-    )
+    y_true = np.asarray(y_true, dtype=int)
+    scores = np.asarray(scores, dtype=float)
 
     if len(np.unique(y_true)) < 2:
         return float("nan")
@@ -688,15 +613,8 @@ def safe_average_precision(
     y_true: np.ndarray,
     scores: np.ndarray,
 ) -> float:
-    y_true = np.asarray(
-        y_true,
-        dtype=int,
-    )
-
-    scores = np.asarray(
-        scores,
-        dtype=float,
-    )
+    y_true = np.asarray(y_true, dtype=int)
+    scores = np.asarray(scores, dtype=float)
 
     if y_true.sum() == 0:
         return float("nan")
@@ -716,10 +634,7 @@ def select_top_features(
     """
     Select top-k features in descending score order.
     """
-    scores = np.asarray(
-        scores,
-        dtype=float,
-    )
+    scores = np.asarray(scores, dtype=float)
 
     if scores.ndim != 1:
         raise ValueError(
@@ -739,9 +654,7 @@ def select_top_features(
         kind="stable",
     )
 
-    return ranking[
-        :top_k
-    ]
+    return ranking[:top_k]
 
 
 def get_feature_ranks(
@@ -750,10 +663,7 @@ def get_feature_ranks(
     """
     Return one-based ranks.
     """
-    scores = np.asarray(
-        scores,
-        dtype=float,
-    )
+    scores = np.asarray(scores, dtype=float)
 
     order = np.argsort(
         -np.nan_to_num(
@@ -805,7 +715,6 @@ def fit_downstream_models(
         :,
         selected_indices,
     ]
-
     X_test_selected = X_test[
         :,
         selected_indices,
@@ -820,9 +729,7 @@ def fit_downstream_models(
         random_state=random_state,
     )
 
-    downstream_if.fit(
-        X_train_selected
-    )
+    downstream_if.fit(X_train_selected)
 
     if_scores = (
         -downstream_if.decision_function(
@@ -833,7 +740,8 @@ def fit_downstream_models(
     if_predictions = (
         downstream_if.predict(
             X_test_selected
-        ) == -1
+        )
+        == -1
     ).astype(int)
 
     result = {
@@ -951,6 +859,9 @@ def run_one_repeat(
     config: BenchmarkConfig,
     repeat_index: int,
     signal_mask: Optional[np.ndarray] = None,
+    fold_preprocess_fn: Optional[
+        FoldPreprocessFunction
+    ] = None,
 ) -> Tuple[
     pd.DataFrame,
     pd.DataFrame,
@@ -960,6 +871,10 @@ def run_one_repeat(
 
     signal_mask is optional and should be supplied only for controlled
     simulation data. For real-world data, it must remain None.
+
+    fold_preprocess_fn is optional and is applied after each train/test
+    split. It enables fold-wise preprocessing, such as imputation fitted
+    only on the training fold.
     """
     if not isinstance(X, pd.DataFrame):
         X = pd.DataFrame(
@@ -967,9 +882,7 @@ def run_one_repeat(
             columns=feature_names,
         )
 
-    if list(X.columns) != list(
-        feature_names
-    ):
+    if list(X.columns) != list(feature_names):
         raise ValueError(
             "X columns must match feature_names."
         )
@@ -979,10 +892,7 @@ def run_one_repeat(
         feature_types=feature_types,
     )
 
-    y = np.asarray(
-        y,
-        dtype=int,
-    )
+    y = np.asarray(y, dtype=int)
 
     if len(X) != len(y):
         raise ValueError(
@@ -991,15 +901,12 @@ def run_one_repeat(
         )
 
     random_state = (
-        config.base_seed
-        + repeat_index
+        config.base_seed + repeat_index
     )
 
-    contamination = (
-        resolve_contamination(
-            y=y,
-            config=config,
-        )
+    contamination = resolve_contamination(
+        y=y,
+        config=config,
     )
 
     (
@@ -1015,6 +922,19 @@ def run_one_repeat(
         random_state=random_state,
     )
 
+    if fold_preprocess_fn is not None:
+        (
+            X_train,
+            X_test,
+            y_train,
+            y_test,
+        ) = fold_preprocess_fn(
+            X_train=X_train,
+            X_test=X_test,
+            y_train=y_train,
+            y_test=y_test,
+        )
+
     model = fit_isolation_forest(
         X_train=X_train,
         config=config,
@@ -1022,11 +942,9 @@ def run_one_repeat(
         random_state=random_state,
     )
 
-    train_anomaly_mask = (
-        get_model_anomaly_mask(
-            model=model,
-            X=X_train,
-        )
+    train_anomaly_mask = get_model_anomaly_mask(
+        model=model,
+        X=X_train,
     )
 
     original_scores, _, _ = (
@@ -1071,15 +989,11 @@ def run_one_repeat(
             )
 
     for method, scores in methods.items():
-        ranks = get_feature_ranks(
-            scores
-        )
+        ranks = get_feature_ranks(scores)
 
-        selected_indices = (
-            select_top_features(
-                scores=scores,
-                top_k=config.top_k,
-            )
+        selected_indices = select_top_features(
+            scores=scores,
+            top_k=config.top_k,
         )
 
         downstream_metrics = (
@@ -1108,18 +1022,14 @@ def run_one_repeat(
             ),
             "n_selected_continuous": int(
                 sum(
-                    feature_types[index]
-                    == "cont"
-                    for index
-                    in selected_indices
+                    feature_types[index] == "cont"
+                    for index in selected_indices
                 )
             ),
             "n_selected_binary": int(
                 sum(
-                    feature_types[index]
-                    == "bin"
-                    for index
-                    in selected_indices
+                    feature_types[index] == "bin"
+                    for index in selected_indices
                 )
             ),
             **downstream_metrics,
@@ -1129,7 +1039,6 @@ def run_one_repeat(
             signal_scores = scores[
                 signal_mask_array
             ]
-
             noise_scores = scores[
                 ~signal_mask_array
             ]
@@ -1155,13 +1064,12 @@ def run_one_repeat(
                 }
             )
 
-        downstream_records.append(
-            record
-        )
+        downstream_records.append(record)
 
-        for feature_index, feature_name in enumerate(
-            feature_names
-        ):
+        for (
+            feature_index,
+            feature_name,
+        ) in enumerate(feature_names):
             score_record = {
                 "repeat": repeat_index,
                 "method": method,
@@ -1194,12 +1102,8 @@ def run_one_repeat(
             )
 
     return (
-        pd.DataFrame(
-            score_records
-        ),
-        pd.DataFrame(
-            downstream_records
-        ),
+        pd.DataFrame(score_records),
+        pd.DataFrame(downstream_records),
     )
 
 
@@ -1208,11 +1112,10 @@ def run_benchmark(
     y: np.ndarray,
     feature_names: List[str],
     feature_types: Dict[int, str],
-    config: Optional[
-        BenchmarkConfig
-    ] = None,
-    signal_mask: Optional[
-        np.ndarray
+    config: Optional[BenchmarkConfig] = None,
+    signal_mask: Optional[np.ndarray] = None,
+    fold_preprocess_fn: Optional[
+        FoldPreprocessFunction
     ] = None,
 ) -> Tuple[
     pd.DataFrame,
@@ -1223,6 +1126,10 @@ def run_benchmark(
     Run repeated paired benchmarking.
 
     For real-world data, leave signal_mask=None.
+
+    fold_preprocess_fn is optional and is applied after each train/test
+    split. It enables fold-wise preprocessing, such as imputation fitted
+    only on the training fold.
     """
     if config is None:
         config = BenchmarkConfig()
@@ -1233,17 +1140,12 @@ def run_benchmark(
             columns=feature_names,
         )
 
-    if list(X.columns) != list(
-        feature_names
-    ):
+    if list(X.columns) != list(feature_names):
         raise ValueError(
             "X columns must match feature_names."
         )
 
-    y = np.asarray(
-        y,
-        dtype=int,
-    )
+    y = np.asarray(y, dtype=int)
 
     if len(X) != len(y):
         raise ValueError(
@@ -1259,34 +1161,26 @@ def run_benchmark(
     all_scores = []
     all_downstream = []
 
-    for repeat_index in range(
-        config.n_repeats
-    ):
+    for repeat_index in range(config.n_repeats):
         print(
             f"[{repeat_index + 1}/"
             f"{config.n_repeats}] "
             "running benchmark"
         )
 
-        scores_df, downstream_df = (
-            run_one_repeat(
-                X=X,
-                y=y,
-                feature_names=feature_names,
-                feature_types=feature_types,
-                config=config,
-                repeat_index=repeat_index,
-                signal_mask=signal_mask,
-            )
+        scores_df, downstream_df = run_one_repeat(
+            X=X,
+            y=y,
+            feature_names=feature_names,
+            feature_types=feature_types,
+            config=config,
+            repeat_index=repeat_index,
+            signal_mask=signal_mask,
+            fold_preprocess_fn=fold_preprocess_fn,
         )
 
-        all_scores.append(
-            scores_df
-        )
-
-        all_downstream.append(
-            downstream_df
-        )
+        all_scores.append(scores_df)
+        all_downstream.append(downstream_df)
 
     scores_df = pd.concat(
         all_scores,
@@ -1336,17 +1230,11 @@ def summarize_benchmark(
     for column in numeric_columns:
         aggregations[
             f"{column}_mean"
-        ] = (
-            column,
-            "mean",
-        )
+        ] = (column, "mean")
 
         aggregations[
             f"{column}_sd"
-        ] = (
-            column,
-            "std",
-        )
+        ] = (column, "std")
 
     summary_df = (
         downstream_df
@@ -1359,8 +1247,7 @@ def summarize_benchmark(
 
     method_order = {
         method: index
-        for index, method
-        in enumerate(
+        for index, method in enumerate(
             METHOD_ORDER
         )
     }
@@ -1373,15 +1260,9 @@ def summarize_benchmark(
 
     return (
         summary_df
-        .sort_values(
-            "_method_order"
-        )
-        .drop(
-            columns="_method_order"
-        )
-        .reset_index(
-            drop=True
-        )
+        .sort_values("_method_order")
+        .drop(columns="_method_order")
+        .reset_index(drop=True)
     )
 
 
@@ -1399,9 +1280,7 @@ def summarize_feature_scores(
     ]
 
     if "signal" in scores_df.columns:
-        group_columns.append(
-            "signal"
-        )
+        group_columns.append("signal")
 
     return (
         scores_df
@@ -1410,22 +1289,10 @@ def summarize_feature_scores(
             as_index=False,
         )
         .agg(
-            score_mean=(
-                "score",
-                "mean",
-            ),
-            score_sd=(
-                "score",
-                "std",
-            ),
-            rank_mean=(
-                "rank",
-                "mean",
-            ),
-            rank_sd=(
-                "rank",
-                "std",
-            ),
+            score_mean=("score", "mean"),
+            score_sd=("score", "std"),
+            rank_mean=("rank", "mean"),
+            rank_sd=("rank", "std"),
             selection_rate=(
                 "selected",
                 "mean",
@@ -1437,9 +1304,7 @@ def summarize_feature_scores(
                 "rank_mean",
             ]
         )
-        .reset_index(
-            drop=True
-        )
+        .reset_index(drop=True)
     )
 
 
@@ -1452,9 +1317,7 @@ def save_benchmark_outputs(
     """
     Save benchmark outputs.
     """
-    output_dir = Path(
-        output_dir
-    )
+    output_dir = Path(output_dir)
 
     output_dir.mkdir(
         parents=True,
@@ -1462,8 +1325,7 @@ def save_benchmark_outputs(
     )
 
     scores_df.to_csv(
-        output_dir
-        / "feature_scores.csv",
+        output_dir / "feature_scores.csv",
         index=False,
     )
 
