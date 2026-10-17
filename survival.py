@@ -689,6 +689,7 @@ def run_survival_repetition(
     original_scores_func: Any,
     ad_scores_func: Any,
     config: SurvivalConfig,
+    repeat_index: int = 0,
     time_col: Optional[str] = None,
     event_col: Optional[str] = None,
     original_top_k: Optional[int] = None,
@@ -703,7 +704,7 @@ def run_survival_repetition(
     time_col = time_col or config.time_col
     event_col = event_col or config.event_col
 
-    seed = config.base_seed + 1000 + y_event.size
+    seed = config.base_seed + repeat_index
 
     train_indices, test_indices = (
         train_test_split(
@@ -797,7 +798,8 @@ def run_survival_repetition(
     )
 
     return {
-        "repeat": seed,
+        "repeat": repeat_index,
+        "seed": seed,
         "original_features": original_features,
         "ad_features": ad_features,
         "original": original_result,
@@ -832,8 +834,8 @@ def evaluate_full_feature_survival(
         errors="coerce",
     ).fillna(0).astype(int).to_numpy()
 
-    for repeat in range(config.n_repeats):
-        seed = config.base_seed + repeat
+    for repeat_index in range(config.n_repeats):
+        seed = config.base_seed + repeat_index
 
         train_indices, test_indices = (
             train_test_split(
@@ -867,7 +869,8 @@ def evaluate_full_feature_survival(
 
         records.append(
             {
-                "repeat": repeat,
+                "repeat": repeat_index,
+                "seed": seed,
                 "c_index": result["c_index"],
                 "model_type": result["model_type"],
                 "n_train": result["n_train"],
@@ -1018,6 +1021,7 @@ def serialize_survival_results(
         records.append(
             {
                 "repeat": result["repeat"],
+                "seed": result["seed"],
                 "original_c_index": original[
                     "c_index"
                 ],
@@ -1043,6 +1047,12 @@ def serialize_survival_results(
                         "selected_features"
                     ]
                 ),
+                "original_features": result[
+                    "original_features"
+                ],
+                "ad_features": result[
+                    "ad_features"
+                ],
                 "original_error": original[
                     "error"
                 ],
