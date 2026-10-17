@@ -452,8 +452,8 @@ def calculate_c_index(
 
 def fit_cox_with_fallback(
     X_train: pd.DataFrame,
-    durations_train: pd.Series,
-    events_train: pd.Series,
+    durations: pd.Series,
+    events: pd.Series,
     feature_names: Sequence[str],
     penalizer: float,
     l1_ratio: float,
@@ -467,8 +467,8 @@ def fit_cox_with_fallback(
     try:
         model = fit_multivariable_cox(
             X_train=X_train,
-            durations=durations_train,
-            events=events_train,
+            durations=durations,
+            events=events,
             feature_names=feature_names,
             penalizer=penalizer,
             l1_ratio=l1_ratio,
@@ -502,8 +502,8 @@ def fit_cox_with_fallback(
     try:
         model = fit_univariate_cox(
             X_train=X_train,
-            durations=durations_train,
-            events=events_train,
+            durations=durations,
+            events=events,
             feature_name=fallback_feature,
             penalizer=penalizer,
             l1_ratio=l1_ratio,
