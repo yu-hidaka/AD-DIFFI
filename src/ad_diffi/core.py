@@ -295,20 +295,7 @@ def _feature_enrichment_terms(
     feature_types: FeatureTypes,
     anomaly_mask: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Return per-observation AD-DIFFI numerators and denominators.
-
-    For an eligible node v on the path of observation x in tree t, the
-    contribution is
-
-        lambda(v) * E(v) / max(h_t(x), 1),
-
-    where lambda(v) is the raw split-imbalance coefficient, E(v) is the
-    absolute difference in model-defined outlier prevalence between the child
-    nodes, and h_t(x) is the number of internal split nodes on the path.
-
-    Continuous features are eligible at all internal split nodes. Binary
-    features are eligible only when selected at the root node.
-    """
+    """Return per-observation AD-DIFFI numerators and denominators."""
     n_samples, n_features = X_data.shape
 
     tree = estimator.tree_
@@ -380,47 +367,7 @@ def compute_enrichment_ad_diffi(
     feature_types: FeatureTypes,
     anomaly_mask: np.ndarray,
 ) -> np.ndarray:
-    """Compute raw enrichment-based AD-DIFFI feature scores.
-
-    This is the sole formal AD-DIFFI score used in the analysis.
-
-    For each fitted tree, the method averages the feature-specific eligible
-    node contributions
-
-        lambda(v) * E(v) / max(h_t(x), 1)
-
-    over feature-specific path occurrences. Here, lambda(v) is raw split
-    imbalance, E(v) is node-level model-defined outlier enrichment, and
-    h_t(x) is the observation-specific number of internal path nodes.
-
-    Continuous features contribute at every internal split node where they
-    are selected. Binary features contribute only when selected at the root
-    node under the Root-Split-Only rule.
-
-    Tree-specific feature means are averaged across the forest. Larger values
-    indicate stronger structural attribution to split imbalance and
-    model-defined outlier enrichment under the fitted Isolation Forest.
-
-    Parameters
-    ----------
-    iforest:
-        A fitted sklearn IsolationForest.
-
-    X_data:
-        Two-dimensional data array used for attribution.
-
-    feature_types:
-        Mapping from feature index to ``"cont"`` or ``"bin"``.
-
-    anomaly_mask:
-        Boolean model-defined outlier mask. In the standard workflow, use
-        ``iforest.predict(X_data) == -1``.
-
-    Returns
-    -------
-    np.ndarray
-        One raw enrichment-based AD-DIFFI score per feature.
-    """
+    """Compute raw enrichment-based AD-DIFFI feature scores using conditional averaging."""
     X_data, anomaly_mask = _validate_inputs(
         iforest,
         X_data,
@@ -435,10 +382,8 @@ def compute_enrichment_ad_diffi(
 
     n_features = X_data.shape[1]
 
-    forest_importance = np.zeros(
-        n_features,
-        dtype=float,
-    )
+    total_tree_scores = np.zeros(n_features, dtype=float)
+    valid_tree_counts = np.zeros(n_features, dtype=float)
 
     for estimator in iforest.estimators_:
         numerator, denominator = _feature_enrichment_terms(
@@ -458,8 +403,19 @@ def compute_enrichment_ad_diffi(
             where=tree_denominator > 0,
         )
 
-        forest_importance += tree_scores
+        mask_valid = tree_denominator > 0
+        total_tree_scores[mask_valid] += tree_scores[mask_valid]
+        valid_tree_counts[mask_valid] += 1.0
 
-    return forest_importance / len(
-        iforest.estimators_
+    forest_importance = np.divide(
+        total_tree_scores,
+        valid_tree_counts,
+        out=np.zeros_like(total_tree_scores),
+        where=valid_tree_counts > 0,
     )
+
+    return forest_importance
+
+
+compute_raw_ad_diffi = compute_enrichment_ad_diffi
+calculate_ad_diffi = compute_enrichment_ad_diffi
