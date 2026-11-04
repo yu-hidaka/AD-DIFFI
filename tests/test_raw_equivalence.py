@@ -5,179 +5,24 @@ import pytest
 
 from sklearn.ensemble import IsolationForest
 
-from ad_diffi.core import compute_raw_ad_diffi
+from ad_diffi.core import (
+    compute_enrichment_ad_diffi_fast,
+    compute_enrichment_ad_diffi_reference,
+    compute_raw_ad_diffi,
+)
 
 
-def sparse_raw_reference(
-    model,
-    X,
-    feature_types,
-    anomaly_mask,
-):
-    """Independent sparse aggregation for equivalence testing.
+RTOL = 1e-10
+ATOL = 1e-12
 
-    This function is a test oracle, not a public production API.
-    It deliberately does not use core.py's contribution helpers.
-    """
-    X = np.asarray(X, dtype=float)
-    anomaly_mask = np.asarray(
-        anomaly_mask,
-        dtype=bool,
-    )
 
-    n_features = X.shape[1]
-
-    total_scores = np.zeros(
-        n_features,
-        dtype=float,
-    )
-
-    valid_tree_counts = np.zeros(
-        n_features,
-        dtype=int,
-    )
-
-    for estimator in model.estimators_:
-        tree = estimator.tree_
-
-        left = tree.children_left
-        right = tree.children_right
-
-        internal = np.flatnonzero(
-            left != right
-        )
-
-        if internal.size == 0:
-            continue
-
-        membership = (
-            estimator.decision_path(X).tocsr()
-        )
-
-        occupancy = np.asarray(
-            membership.sum(axis=0)
-        ).ravel()
-
-        outlier_counts = np.asarray(
-            membership.T
-            @ anomaly_mask.astype(float)
-        ).ravel()
-
-        path_lengths = np.maximum(
-            np.diff(membership.indptr) - 1,
-            1,
-        )
-
-        weighted_occupancy = np.asarray(
-            membership.T
-            @ (1.0 / path_lengths)
-        ).ravel()
-
-        left_nodes = left[internal]
-        right_nodes = right[internal]
-
-        training_counts = tree.n_node_samples
-
-        lambdas = 1.0 - (
-            np.minimum(
-                training_counts[left_nodes],
-                training_counts[right_nodes],
-            )
-            / training_counts[internal]
-        )
-
-        left_n = occupancy[left_nodes]
-        right_n = occupancy[right_nodes]
-
-        left_rate = np.divide(
-            outlier_counts[left_nodes],
-            left_n,
-            out=np.zeros(
-                internal.size,
-                dtype=float,
-            ),
-            where=left_n > 0,
-        )
-
-        right_rate = np.divide(
-            outlier_counts[right_nodes],
-            right_n,
-            out=np.zeros(
-                internal.size,
-                dtype=float,
-            ),
-            where=right_n > 0,
-        )
-
-        enrichment = np.abs(
-            left_rate - right_rate
-        )
-
-        enrichment[
-            (left_n == 0) | (right_n == 0)
-        ] = 0.0
-
-        split_features = tree.feature[internal]
-
-        eligible = np.asarray(
-            [
-                feature_types[int(feature)] == "cont"
-                or node == 0
-                for node, feature in zip(
-                    internal,
-                    split_features,
-                )
-            ],
-            dtype=bool,
-        )
-
-        nodes = internal[eligible]
-        features = split_features[eligible]
-
-        numerator = np.bincount(
-            features,
-            weights=(
-                lambdas[eligible]
-                * enrichment[eligible]
-                * weighted_occupancy[nodes]
-            ),
-            minlength=n_features,
-        )
-
-        denominator = np.bincount(
-            features,
-            weights=occupancy[nodes],
-            minlength=n_features,
-        )
-
-        tree_scores = np.divide(
-            numerator,
-            denominator,
-            out=np.zeros(
-                n_features,
-                dtype=float,
-            ),
-            where=denominator > 0,
-        )
-
-        valid = denominator > 0
-
-        total_scores[valid] += tree_scores[valid]
-        valid_tree_counts[valid] += 1
-
-    return np.divide(
-        total_scores,
-        valid_tree_counts,
-        out=np.zeros(
-            n_features,
-            dtype=float,
-        ),
-        where=valid_tree_counts > 0,
-    )
-
+# ============================================================
+# Fixtures
+# ============================================================
 
 @pytest.fixture
 def equivalence_case():
+    """Return a fitted forest and mixed continuous-binary data."""
     rng = np.random.default_rng(123)
 
     X = rng.normal(
@@ -190,9 +35,9 @@ def equivalence_case():
         len(X),
     )
 
-    # Include a rare binary feature with one positive observation.
-    X[:, 3] = 0
-    X[0, 3] = 1
+    # A rare binary feature with one positive observation.
+    X[:, 3] = 0.0
+    X[0, 3] = 1.0
 
     feature_types = {
         0: "cont",
@@ -202,7 +47,7 @@ def equivalence_case():
     }
 
     model = IsolationForest(
-        n_estimators=16,
+        n_estimators=12,
         max_samples=24,
         contamination=0.2,
         max_features=1.0,
@@ -213,21 +58,108 @@ def equivalence_case():
     return model, X, feature_types
 
 
+# ============================================================
+# Comparison helper
+# ============================================================
+
+def assert_raw_implementations_match(
+    model,
+    X,
+    feature_types,
+    anomaly_mask,
+):
+    """Compare the reference, fast implementation, and public API."""
+    reference_scores = (
+        compute_enrichment_ad_diffi_reference(
+            iforest=model,
+            X_data=X,
+            feature_types=feature_types,
+            anomaly_mask=anomaly_mask,
+        )
+    )
+
+    fast_scores = compute_enrichment_ad_diffi_fast(
+        iforest=model,
+        X_data=X,
+        feature_types=feature_types,
+        anomaly_mask=anomaly_mask,
+    )
+
+    public_scores = compute_raw_ad_diffi(
+        iforest=model,
+        X_data=X,
+        feature_types=feature_types,
+        anomaly_mask=anomaly_mask,
+    )
+
+    expected_shape = (X.shape[1],)
+
+    for scores in (
+        reference_scores,
+        fast_scores,
+        public_scores,
+    ):
+        assert scores.shape == expected_shape
+        assert np.isfinite(scores).all()
+        assert np.all(scores >= 0.0)
+
+    np.testing.assert_allclose(
+        fast_scores,
+        reference_scores,
+        rtol=RTOL,
+        atol=ATOL,
+        equal_nan=False,
+        err_msg=(
+            "The fast implementation differs from "
+            "the observation-wise reference."
+        ),
+    )
+
+    np.testing.assert_allclose(
+        public_scores,
+        reference_scores,
+        rtol=RTOL,
+        atol=ATOL,
+        equal_nan=False,
+        err_msg=(
+            "The public raw API differs from "
+            "the observation-wise reference."
+        ),
+    )
+
+    return reference_scores, fast_scores, public_scores
+
+
+# ============================================================
+# Observed and permuted data
+# ============================================================
+
 @pytest.mark.parametrize(
     "permuted_feature",
     [None, 0, 1, 2, 3],
 )
-def test_sparse_and_core_match(
+@pytest.mark.parametrize(
+    "mask_kind",
+    [
+        "model",
+        "alternating",
+        "all_inlier",
+        "all_outlier",
+    ],
+)
+def test_fast_matches_reference_on_observed_and_permuted_data(
     equivalence_case,
     permuted_feature,
+    mask_kind,
 ):
+    """Compare implementations using identical data and masks."""
     model, X, feature_types = equivalence_case
 
     X_eval = X.copy()
 
     if permuted_feature is not None:
         rng = np.random.default_rng(
-            1000 + permuted_feature
+            2000 + permuted_feature
         )
 
         X_eval[:, permuted_feature] = (
@@ -236,148 +168,81 @@ def test_sparse_and_core_match(
             )
         )
 
-    mask = model.predict(X_eval) == -1
+    if mask_kind == "model":
+        anomaly_mask = model.predict(
+            X_eval
+        ) == -1
 
-    expected = compute_raw_ad_diffi(
-        model,
-        X_eval,
-        feature_types,
-        mask,
+    elif mask_kind == "alternating":
+        anomaly_mask = (
+            np.arange(len(X_eval)) % 2 == 0
+        )
+
+    elif mask_kind == "all_inlier":
+        anomaly_mask = np.zeros(
+            len(X_eval),
+            dtype=bool,
+        )
+
+    else:
+        anomaly_mask = np.ones(
+            len(X_eval),
+            dtype=bool,
+        )
+
+    reference, fast, public = (
+        assert_raw_implementations_match(
+            model,
+            X_eval,
+            feature_types,
+            anomaly_mask,
+        )
     )
 
-    actual = sparse_raw_reference(
-        model,
-        X_eval,
-        feature_types,
-        mask,
-    )
+    if mask_kind in {
+        "all_inlier",
+        "all_outlier",
+    }:
+        expected = np.zeros(
+            X.shape[1],
+            dtype=float,
+        )
 
-    np.testing.assert_allclose(
-        actual,
-        expected,
-        rtol=1e-10,
-        atol=1e-12,
-    )
+        for scores in (
+            reference,
+            fast,
+            public,
+        ):
+            np.testing.assert_array_equal(
+                scores,
+                expected,
+            )
 
 
 @pytest.mark.parametrize(
-    "mask_kind",
-    ["all_inlier", "all_outlier", "alternating"],
+    "seed",
+    [7, 42, 2026],
 )
-def test_sparse_and_core_match_for_supplied_masks(
-    equivalence_case,
-    mask_kind,
+def test_fast_matches_reference_across_forest_seeds(
+    seed,
 ):
-    model, X, feature_types = equivalence_case
+    """Check agreement across independently fitted forests."""
+    rng = np.random.default_rng(seed)
 
-    if mask_kind == "all_inlier":
-        mask = np.zeros(
-            len(X),
-            dtype=bool,
-        )
-    elif mask_kind == "all_outlier":
-        mask = np.ones(
-            len(X),
-            dtype=bool,
-        )
-    else:
-        mask = np.arange(len(X)) % 2 == 0
-
-    expected = compute_raw_ad_diffi(
-        model,
-        X,
-        feature_types,
-        mask,
+    X = rng.normal(
+        size=(28, 4)
     )
 
-    actual = sparse_raw_reference(
-        model,
-        X,
-        feature_types,
-        mask,
+    X[:, 2] = rng.binomial(
+        1,
+        0.2,
+        len(X),
     )
 
-    np.testing.assert_allclose(
-        actual,
-        expected,
-        rtol=1e-10,
-        atol=1e-12,
-    )
-
-
-def test_sparse_and_core_match_with_empty_children(
-    equivalence_case,
-):
-    model, X, feature_types = equivalence_case
-
-    X_eval = np.repeat(
-        X[:1],
-        repeats=6,
-        axis=0,
-    )
-
-    mask = np.array(
-        [False, True, False, True, False, True]
-    )
-
-    expected = compute_raw_ad_diffi(
-        model,
-        X_eval,
-        feature_types,
-        mask,
-    )
-
-    actual = sparse_raw_reference(
-        model,
-        X_eval,
-        feature_types,
-        mask,
-    )
-
-    np.testing.assert_allclose(
-        actual,
-        expected,
-        rtol=1e-10,
-        atol=1e-12,
-    )
-
-    np.testing.assert_array_equal(
-        expected,
-        np.zeros(X.shape[1]),
-    )
-
-
-def test_binary_without_eligible_root_has_zero_score(
-    equivalence_case,
-):
-    model, X, _ = equivalence_case
-
-    root_features = {
-        int(estimator.tree_.feature[0])
-        for estimator in model.estimators_
-    }
-
-    # Build a single-tree forest view by retaining one estimator.
-    # All other features then have no eligible root in that view.
-    import copy
-
-    single_tree_model = copy.copy(model)
-    single_tree_model.estimators_ = [
-        model.estimators_[0]
-    ]
-    single_tree_model.estimators_features_ = [
-        model.estimators_features_[0]
-    ]
-
-    root_feature = int(
-        single_tree_model.estimators_[0]
-        .tree_.feature[0]
-    )
-
-    target = next(
-        index
-        for index in [2, 3]
-        if index != root_feature
+    X[:, 3] = rng.binomial(
+        1,
+        0.5,
+        len(X),
     )
 
     feature_types = {
@@ -387,13 +252,334 @@ def test_binary_without_eligible_root_has_zero_score(
         3: "bin",
     }
 
-    mask = np.arange(len(X)) % 2 == 0
+    model = IsolationForest(
+        n_estimators=8,
+        max_samples=20,
+        contamination=0.2,
+        max_features=1.0,
+        bootstrap=False,
+        random_state=seed,
+    ).fit(X)
 
-    score = compute_raw_ad_diffi(
-        single_tree_model,
+    anomaly_mask = model.predict(X) == -1
+
+    assert_raw_implementations_match(
+        model,
         X,
         feature_types,
-        mask,
+        anomaly_mask,
     )
 
-    assert score[target] == 0
+
+# ============================================================
+# Edge cases
+# ============================================================
+
+def test_fast_matches_reference_with_empty_children(
+    equivalence_case,
+):
+    """Repeated identical rows leave one child empty at each split."""
+    model, X, feature_types = equivalence_case
+
+    X_eval = np.repeat(
+        X[:1],
+        repeats=6,
+        axis=0,
+    )
+
+    anomaly_mask = np.array(
+        [
+            False,
+            True,
+            False,
+            True,
+            False,
+            True,
+        ]
+    )
+
+    reference, fast, public = (
+        assert_raw_implementations_match(
+            model,
+            X_eval,
+            feature_types,
+            anomaly_mask,
+        )
+    )
+
+    expected = np.zeros(
+        X.shape[1],
+        dtype=float,
+    )
+
+    for scores in (
+        reference,
+        fast,
+        public,
+    ):
+        np.testing.assert_array_equal(
+            scores,
+            expected,
+        )
+
+
+def test_fast_matches_reference_with_constant_binary_feature(
+    equivalence_case,
+):
+    """A constant binary evaluation column remains supported."""
+    model, X, feature_types = equivalence_case
+
+    X_eval = X.copy()
+    X_eval[:, 3] = 0.0
+
+    anomaly_mask = (
+        np.arange(len(X_eval)) % 2 == 0
+    )
+
+    reference, fast, public = (
+        assert_raw_implementations_match(
+            model,
+            X_eval,
+            feature_types,
+            anomaly_mask,
+        )
+    )
+
+    for scores in (
+        reference,
+        fast,
+        public,
+    ):
+        assert scores[3] == 0.0
+
+
+def test_binary_feature_without_eligible_root_has_zero_score(
+    equivalence_case,
+):
+    """Binary features not used at the root receive zero scores."""
+    _, X, feature_types = equivalence_case
+
+    model = IsolationForest(
+        n_estimators=1,
+        max_samples=24,
+        contamination=0.2,
+        max_features=1.0,
+        bootstrap=False,
+        random_state=321,
+    ).fit(X)
+
+    root_feature = int(
+        model.estimators_[0].tree_.feature[0]
+    )
+
+    target_feature = next(
+        feature
+        for feature in [2, 3]
+        if feature != root_feature
+    )
+
+    anomaly_mask = (
+        np.arange(len(X)) % 2 == 0
+    )
+
+    reference, fast, public = (
+        assert_raw_implementations_match(
+            model,
+            X,
+            feature_types,
+            anomaly_mask,
+        )
+    )
+
+    for scores in (
+        reference,
+        fast,
+        public,
+    ):
+        assert scores[target_feature] == 0.0
+
+
+def test_forests_without_internal_splits_return_zero():
+    """A forest fitted on constant data has no eligible splits."""
+    X = np.zeros(
+        (12, 3),
+        dtype=float,
+    )
+
+    feature_types = {
+        0: "cont",
+        1: "cont",
+        2: "bin",
+    }
+
+    model = IsolationForest(
+        n_estimators=4,
+        max_samples=12,
+        contamination=0.25,
+        max_features=1.0,
+        bootstrap=False,
+        random_state=42,
+    ).fit(X)
+
+    anomaly_mask = (
+        np.arange(len(X)) % 2 == 0
+    )
+
+    reference, fast, public = (
+        assert_raw_implementations_match(
+            model,
+            X,
+            feature_types,
+            anomaly_mask,
+        )
+    )
+
+    expected = np.zeros(
+        X.shape[1],
+        dtype=float,
+    )
+
+    for scores in (
+        reference,
+        fast,
+        public,
+    ):
+        np.testing.assert_array_equal(
+            scores,
+            expected,
+        )
+
+
+def test_numeric_mask_matches_boolean_mask(
+    equivalence_case,
+):
+    """Numeric 0/1 masks preserve the same raw scores."""
+    model, X, feature_types = equivalence_case
+
+    boolean_mask = (
+        np.arange(len(X)) % 2 == 0
+    )
+
+    numeric_mask = boolean_mask.astype(
+        np.int64
+    )
+
+    boolean_scores = compute_raw_ad_diffi(
+        model,
+        X,
+        feature_types,
+        boolean_mask,
+    )
+
+    _, _, numeric_scores = (
+        assert_raw_implementations_match(
+            model,
+            X,
+            feature_types,
+            numeric_mask,
+        )
+    )
+
+    np.testing.assert_allclose(
+        numeric_scores,
+        boolean_scores,
+        rtol=RTOL,
+        atol=ATOL,
+        equal_nan=False,
+    )
+
+
+# ============================================================
+# Input and fitted-tree preservation
+# ============================================================
+
+def test_raw_scoring_does_not_modify_inputs_or_trees(
+    equivalence_case,
+):
+    """Neither implementation may mutate data, masks, or tree arrays."""
+    model, X, feature_types = equivalence_case
+
+    anomaly_mask = (
+        np.arange(len(X)) % 2 == 0
+    )
+
+    original_X = X.copy()
+    original_mask = anomaly_mask.copy()
+    original_feature_types = feature_types.copy()
+
+    original_tree_arrays = [
+        {
+            "feature": estimator.tree_.feature.copy(),
+            "threshold": estimator.tree_.threshold.copy(),
+            "children_left": (
+                estimator.tree_.children_left.copy()
+            ),
+            "children_right": (
+                estimator.tree_.children_right.copy()
+            ),
+            "n_node_samples": (
+                estimator.tree_.n_node_samples.copy()
+            ),
+        }
+        for estimator in model.estimators_
+    ]
+
+    assert_raw_implementations_match(
+        model,
+        X,
+        feature_types,
+        anomaly_mask,
+    )
+
+    np.testing.assert_array_equal(
+        X,
+        original_X,
+    )
+
+    np.testing.assert_array_equal(
+        anomaly_mask,
+        original_mask,
+    )
+
+    assert feature_types == original_feature_types
+
+    for estimator, original_arrays in zip(
+        model.estimators_,
+        original_tree_arrays,
+    ):
+        for array_name, expected in original_arrays.items():
+            np.testing.assert_array_equal(
+                getattr(
+                    estimator.tree_,
+                    array_name,
+                ),
+                expected,
+            )
+
+
+def test_repeated_raw_calls_are_reproducible(
+    equivalence_case,
+):
+    """Repeated evaluations of identical inputs return identical scores."""
+    model, X, feature_types = equivalence_case
+
+    anomaly_mask = model.predict(X) == -1
+
+    first = compute_raw_ad_diffi(
+        model,
+        X,
+        feature_types,
+        anomaly_mask,
+    )
+
+    second = compute_raw_ad_diffi(
+        model,
+        X,
+        feature_types,
+        anomaly_mask,
+    )
+
+    np.testing.assert_array_equal(
+        second,
+        first,
+    )
