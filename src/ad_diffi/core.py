@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, Optional, Tuple
 
 import numpy as np
+
 from sklearn.ensemble import IsolationForest
 
 
@@ -62,14 +63,10 @@ def _validate_anomaly_mask(
 ) -> np.ndarray:
     """Validate and return a Boolean model-defined outlier mask.
 
-    The supplied mask must contain only Boolean or numeric 0/1 values.
+    Only Boolean or numeric 0/1 values are accepted.
 
-    Homogeneous masks are allowed. If all observations are inliers or
-    all observations are outliers, the child-node outlier-prevalence
-    contrasts are zero, and raw AD-DIFFI scores are zero.
-
-    Requirements concerning the presence of both model-defined groups
-    in observed training data should be checked by the caller.
+    Homogeneous masks are allowed. Under the enrichment definition,
+    they produce zero raw AD-DIFFI scores.
     """
     values = np.asarray(anomaly_mask)
 
@@ -98,12 +95,10 @@ def _validate_fitted_forest(
     iforest: IsolationForest,
     n_features: int,
 ) -> None:
-    """Validate the forest configuration supported by this implementation.
+    """Validate the forest configuration supported by raw AD-DIFFI.
 
-    All features must be supplied to every estimator in their original
-    order. Feature subsampling is not supported.
-
-    Bootstrap sampling is excluded from the supported configuration.
+    Every estimator must use all features in their original order.
+    Bootstrap sampling is outside the supported configuration.
     """
     if not isinstance(iforest, IsolationForest):
         raise TypeError(
@@ -242,20 +237,17 @@ def _validate_inputs(
 
 
 # ============================================================
-# Tree-level quantities
+# Reference implementation helpers
 # ============================================================
 
 def _node_lambdas(tree) -> np.ndarray:
-    """Return raw split-imbalance coefficients for all tree nodes.
+    """Return raw split-imbalance coefficients.
 
     For every internal node v,
 
         lambda(v) = 1 - min(n_left, n_right) / n_parent.
 
-    Counts are taken from the fitted tree, not recomputed from the
-    evaluation data.
-
-    Leaf nodes receive zero.
+    Counts come from the fitted tree. Leaf nodes receive zero.
     """
     lambdas = np.zeros(
         tree.node_count,
@@ -310,7 +302,7 @@ def _paths_for_rows(
     estimator,
     X_data: np.ndarray,
 ) -> list[list[int]]:
-    """Return root-to-terminal node paths for all observations."""
+    """Return root-to-terminal paths for all observations."""
     tree = estimator.tree_
     parent = _parent_array(tree)
 
@@ -345,7 +337,7 @@ def _node_membership(
     estimator,
     X_data: np.ndarray,
 ) -> np.ndarray:
-    """Return a Boolean observation-by-node membership matrix."""
+    """Return a dense Boolean observation-by-node membership matrix."""
     return (
         estimator.decision_path(X_data)
         .toarray()
@@ -358,15 +350,12 @@ def _node_outlier_enrichment_from_membership(
     node_membership: np.ndarray,
     anomaly_mask: np.ndarray,
 ) -> np.ndarray:
-    """Return child-node model-defined outlier-prevalence contrasts.
+    """Return child-node outlier-prevalence contrasts.
 
     For every internal node v,
 
         E(v) = |P(outlier | left child of v)
              - P(outlier | right child of v)|.
-
-    Membership and outlier prevalence are computed from the supplied
-    evaluation data and mask.
 
     Leaf nodes and nodes with an empty child receive zero.
     """
@@ -385,12 +374,8 @@ def _node_outlier_enrichment_from_membership(
         in_left = node_membership[:, left]
         in_right = node_membership[:, right]
 
-        n_left = int(
-            in_left.sum()
-        )
-        n_right = int(
-            in_right.sum()
-        )
+        n_left = int(in_left.sum())
+        n_right = int(in_right.sum())
 
         if n_left == 0 or n_right == 0:
             continue
@@ -416,9 +401,9 @@ def _eligible_node(
     feature: int,
     feature_types: FeatureTypes,
 ) -> bool:
-    """Return whether a split node is eligible under raw AD-DIFFI.
+    """Return whether a split node is eligible.
 
-    Continuous features are eligible at all internal split nodes.
+    Continuous features are eligible at all internal nodes.
     Binary features are eligible only at the root.
     """
     feature_type = feature_types[feature]
@@ -432,32 +417,26 @@ def _eligible_node(
     )
 
 
-# ============================================================
-# Observation-level contributions
-# ============================================================
-
 def _feature_enrichment_terms(
     estimator,
     X_data: np.ndarray,
     feature_types: FeatureTypes,
     anomaly_mask: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Return per-observation raw AD-DIFFI numerators and denominators.
+    """Return observation-level numerators and denominators.
 
-    Each eligible occurrence of feature f contributes
+    Each eligible feature occurrence contributes
 
         lambda(v) * E(v) / h_i
 
-    to the numerator, and one to the denominator.
+    to the numerator and one to the denominator.
 
     h_i is the number of internal split nodes on observation i's path.
     """
     n_samples, n_features = X_data.shape
     tree = estimator.tree_
 
-    lambdas = _node_lambdas(
-        tree
-    )
+    lambdas = _node_lambdas(tree)
 
     paths = _paths_for_rows(
         estimator,
@@ -521,64 +500,25 @@ def _feature_enrichment_terms(
 
 
 # ============================================================
-# Public raw AD-DIFFI API
+# Observation-wise reference implementation
 # ============================================================
 
-def compute_enrichment_ad_diffi(
+def compute_enrichment_ad_diffi_reference(
     iforest: IsolationForest,
     X_data: np.ndarray,
     feature_types: FeatureTypes,
     anomaly_mask: np.ndarray,
 ) -> np.ndarray:
-    """Compute unstandardized raw enrichment-based AD-DIFFI scores.
+    """Compute raw AD-DIFFI using the observation-wise reference.
 
-    Parameters
-    ----------
-    iforest
-        A fitted IsolationForest with bootstrap=False and all features
-        supplied to every estimator in their original order.
-    X_data
-        Finite two-dimensional evaluation data. Binary columns must
-        contain only 0 and 1.
-    feature_types
-        Complete mapping from column indices to "cont" or "bin".
-    anomaly_mask
-        Boolean or numeric 0/1 model-defined outlier indicators for
-        X_data. The mask is supplied by the caller; this function does
-        not infer or modify outlier labels.
-
-    Returns
-    -------
-    np.ndarray
-        Nonnegative raw feature scores with shape (n_features,).
-
-    Notes
-    -----
-    Node contributions combine fitted-tree split imbalance,
-    child-node outlier-prevalence contrasts, and inverse
-    observation-specific path length.
-
-    Continuous features are eligible at all internal nodes.
-    Binary features are eligible only at the root.
-
-    Within each tree, contributions are divided by the number of
-    eligible observation-node occurrences for the feature.
-
-    Forest-level scores are averaged only over trees with positive
-    eligible occurrence counts for the feature. Features without any
-    eligible occurrences receive zero.
-
-    Homogeneous outlier masks produce zero scores. No artificial
-    outliers or inliers are introduced.
-
-    This function does not refit the forest and does not perform
-    permutation, hybrid reference estimation, or Z standardization.
+    Retained for numerical-equivalence tests and debugging.
+    Large permutation studies should use the public fast API.
     """
     X_data, validated_mask = _validate_inputs(
-        iforest,
-        X_data,
-        feature_types,
-        anomaly_mask,
+        iforest=iforest,
+        X_data=X_data,
+        feature_types=feature_types,
+        anomaly_mask=anomaly_mask,
     )
 
     if validated_mask is None:
@@ -632,7 +572,10 @@ def compute_enrichment_ad_diffi(
 
         valid = tree_denominator > 0
 
-        total_tree_scores[valid] += tree_scores[valid]
+        total_tree_scores[valid] += (
+            tree_scores[valid]
+        )
+
         valid_tree_counts[valid] += 1
 
     forest_importance = np.divide(
@@ -654,8 +597,298 @@ def compute_enrichment_ad_diffi(
     return forest_importance
 
 
+# ============================================================
+# Fast sparse implementation
+# ============================================================
+
+def compute_enrichment_ad_diffi_fast(
+    iforest: IsolationForest,
+    X_data: np.ndarray,
+    feature_types: FeatureTypes,
+    anomaly_mask: np.ndarray,
+) -> np.ndarray:
+    """Compute raw AD-DIFFI using sparse node-level aggregation.
+
+    The raw-score definition matches the reference implementation.
+
+    Split imbalance:
+        Fitted-tree training node counts.
+
+    Outlier enrichment:
+        Child-node outlier-prevalence differences computed from the
+        supplied evaluation data and anomaly mask.
+
+    Path weighting:
+        Inverse number of internal splits on each observation's path.
+
+    Eligibility:
+        Continuous features at all internal nodes.
+        Binary features at root nodes only.
+
+    Aggregation:
+        Within-tree normalization by eligible observation-node
+        occurrence counts, followed by conditional averaging over
+        trees with positive denominators.
+
+    Empty-child enrichment is zero. Homogeneous masks produce zero
+    scores. The forest and supplied anomaly labels are not modified.
+    """
+    X_data, validated_mask = _validate_inputs(
+        iforest=iforest,
+        X_data=X_data,
+        feature_types=feature_types,
+        anomaly_mask=anomaly_mask,
+    )
+
+    if validated_mask is None:
+        raise ValueError(
+            "anomaly_mask is required."
+        )
+
+    anomaly_mask = validated_mask
+    n_features = X_data.shape[1]
+
+    if anomaly_mask.all() or not anomaly_mask.any():
+        return np.zeros(
+            n_features,
+            dtype=float,
+        )
+
+    feature_is_continuous = np.asarray(
+        [
+            feature_types[index] == _CONTINUOUS
+            for index in range(n_features)
+        ],
+        dtype=bool,
+    )
+
+    total_tree_scores = np.zeros(
+        n_features,
+        dtype=float,
+    )
+
+    valid_tree_counts = np.zeros(
+        n_features,
+        dtype=int,
+    )
+
+    outlier_values = anomaly_mask.astype(
+        float,
+        copy=False,
+    )
+
+    for estimator in iforest.estimators_:
+        tree = estimator.tree_
+
+        left = tree.children_left
+        right = tree.children_right
+
+        internal_nodes = np.flatnonzero(
+            left != right
+        )
+
+        if internal_nodes.size == 0:
+            continue
+
+        # Sparse observation-by-node membership.
+        membership = (
+            estimator.decision_path(X_data)
+            .tocsr()
+        )
+
+        occupancy = np.asarray(
+            membership.sum(axis=0)
+        ).ravel()
+
+        outlier_counts = np.asarray(
+            membership.T @ outlier_values
+        ).ravel()
+
+        # Every root-to-terminal path contains one terminal node.
+        path_lengths = np.maximum(
+            np.diff(membership.indptr) - 1,
+            1,
+        )
+
+        weighted_occupancy = np.asarray(
+            membership.T @ (1.0 / path_lengths)
+        ).ravel()
+
+        left_nodes = left[internal_nodes]
+        right_nodes = right[internal_nodes]
+
+        # Split imbalance remains fixed at training-tree values.
+        training_counts = tree.n_node_samples
+
+        lambdas = 1.0 - (
+            np.minimum(
+                training_counts[left_nodes],
+                training_counts[right_nodes],
+            )
+            / training_counts[internal_nodes]
+        )
+
+        left_occupancy = occupancy[left_nodes]
+        right_occupancy = occupancy[right_nodes]
+
+        left_outlier_rate = np.divide(
+            outlier_counts[left_nodes],
+            left_occupancy,
+            out=np.zeros(
+                internal_nodes.size,
+                dtype=float,
+            ),
+            where=left_occupancy > 0,
+        )
+
+        right_outlier_rate = np.divide(
+            outlier_counts[right_nodes],
+            right_occupancy,
+            out=np.zeros(
+                internal_nodes.size,
+                dtype=float,
+            ),
+            where=right_occupancy > 0,
+        )
+
+        enrichment = np.abs(
+            left_outlier_rate
+            - right_outlier_rate
+        )
+
+        empty_child = (
+            (left_occupancy == 0)
+            | (right_occupancy == 0)
+        )
+
+        enrichment[empty_child] = 0.0
+
+        split_features = (
+            tree.feature[internal_nodes]
+        )
+
+        eligible = (
+            feature_is_continuous[split_features]
+            | (internal_nodes == 0)
+        )
+
+        eligible_nodes = (
+            internal_nodes[eligible]
+        )
+
+        eligible_features = (
+            split_features[eligible]
+        )
+
+        if eligible_nodes.size == 0:
+            continue
+
+        numerator = np.bincount(
+            eligible_features,
+            weights=(
+                lambdas[eligible]
+                * enrichment[eligible]
+                * weighted_occupancy[eligible_nodes]
+            ),
+            minlength=n_features,
+        )
+
+        denominator = np.bincount(
+            eligible_features,
+            weights=occupancy[eligible_nodes],
+            minlength=n_features,
+        )
+
+        tree_scores = np.divide(
+            numerator,
+            denominator,
+            out=np.zeros(
+                n_features,
+                dtype=float,
+            ),
+            where=denominator > 0,
+        )
+
+        valid = denominator > 0
+
+        total_tree_scores[valid] += (
+            tree_scores[valid]
+        )
+
+        valid_tree_counts[valid] += 1
+
+    forest_importance = np.divide(
+        total_tree_scores,
+        valid_tree_counts,
+        out=np.zeros(
+            n_features,
+            dtype=float,
+        ),
+        where=valid_tree_counts > 0,
+    )
+
+    if not np.all(
+        np.isfinite(forest_importance)
+    ):
+        raise ValueError(
+            "Raw AD-DIFFI produced non-finite scores."
+        )
+
+    return forest_importance
+
+
+# ============================================================
+# Public raw AD-DIFFI API
+# ============================================================
+
+def compute_enrichment_ad_diffi(
+    iforest: IsolationForest,
+    X_data: np.ndarray,
+    feature_types: FeatureTypes,
+    anomaly_mask: np.ndarray,
+) -> np.ndarray:
+    """Compute raw AD-DIFFI using the fast sparse implementation.
+
+    Parameters
+    ----------
+    iforest
+        A fitted IsolationForest with bootstrap=False and all
+        features supplied to every estimator in their original order.
+    X_data
+        Finite evaluation data with shape (n_samples, n_features).
+        Binary columns must contain only 0 and 1.
+    feature_types
+        Complete mapping from feature indices to "cont" or "bin".
+    anomaly_mask
+        Boolean or numeric 0/1 model-defined outlier indicators for
+        the supplied evaluation data.
+
+    Returns
+    -------
+    np.ndarray
+        Nonnegative raw feature scores with shape (n_features,).
+
+    Notes
+    -----
+    This function does not refit the forest, infer outlier labels,
+    estimate permutation references, or perform Z standardization.
+
+    Homogeneous masks produce zero scores. Features without eligible
+    occurrences also receive zero.
+
+    The observation-wise implementation remains available as
+    compute_enrichment_ad_diffi_reference for equivalence testing.
+    """
+    return compute_enrichment_ad_diffi_fast(
+        iforest=iforest,
+        X_data=X_data,
+        feature_types=feature_types,
+        anomaly_mask=anomaly_mask,
+    )
+
+
 # Backward-compatible aliases.
-# All three public names return RAW, unstandardized scores.
+# All three public names return raw, unstandardized scores.
 compute_raw_ad_diffi = compute_enrichment_ad_diffi
 calculate_ad_diffi = compute_enrichment_ad_diffi
 
@@ -663,6 +896,8 @@ calculate_ad_diffi = compute_enrichment_ad_diffi
 __all__ = [
     "FeatureTypes",
     "compute_enrichment_ad_diffi",
+    "compute_enrichment_ad_diffi_reference",
+    "compute_enrichment_ad_diffi_fast",
     "compute_raw_ad_diffi",
     "calculate_ad_diffi",
 ]
